@@ -202,6 +202,8 @@ const CAMP := {
 const WAGONS := {
     "res://assets/trees/wagons.png": Vector2i(384, 192),
     "res://assets/trees/cart.png": Vector2i(128, 96),
+    # migrations/LLM-968k-painted-bridge_up.sql (tools/tree-art/bridge.py).
+    "res://assets/trees/bridge.png": Vector2i(192, 128),
 }
 
 var _failures := 0
