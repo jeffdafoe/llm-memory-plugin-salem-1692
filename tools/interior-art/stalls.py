@@ -40,6 +40,7 @@ standing at y 62, the counter's goods at y 76, customers at y 106-109).
 
 import argparse
 import importlib.util
+import json
 import math
 import os
 import random
@@ -64,7 +65,54 @@ _spec.loader.exec_module(BOOTH)
 
 STALL_GD = os.path.join(C.ROOT, "client", "scripts", "stall_scenes.gd")
 ROOFS = ("wood", "tiled", "fancy")
-TRADES = {"smithy": {"width": 192, "counter_from": 64}}
+
+
+def res(name):
+    return "res://assets/interiors/%s.png" % name
+
+
+def spot(x, y, facing):
+    return {"x": x, "y": y, "facing": facing}
+
+
+# ---------------------------------------------------------------- the geometry
+# Every stall scene's layout, in room px (spots are where the feet go),
+# declared once: the sheets are painted from it, and --check requires
+# stall_scenes.gd's constants to say exactly this.
+DENSITY = 2
+SIZE = (128, 112)
+SCENES = {"Market Stall (%s)" % k.capitalize(): res("stall_%s" % k) for k in ROOFS}
+KEEPER = spot(64, 66, "south")
+HANDS = [spot(30, 66, "south"), spot(98, 66, "south")]
+DOOR = spot(64, 108, "north")
+SPOTS = [spot(18, 106, "north"), spot(110, 106, "north"), spot(40, 109, "north"), spot(88, 109, "north")]
+FLOOR_SLOTS = [2, 18, 34, 78, 94, 110]
+FLOOR_Y = 62                    # where the floor piles stand
+COUNTER_SLOTS = [4, 20, 36, 76, 92, 108]
+COUNTER_Y = 76                  # where the goods on the counter stand
+FEW_STEP = (4, 1)
+BELLOWS_FRAME = (32, 28)        # one of stall_smithy_bellows.png's two frames
+TRADES = {
+    "smithy": {
+        "size": (192, 112),
+        "bellows": spot(57, 57, "north"),
+        "anvil": spot(36, 84, "west"),
+        "fire": (1, 32, 26, 19),
+        "bellows_art": {"sheet": res("stall_smithy_bellows"), "x": 30, "y": 24},
+        "counter_from": 64,
+        "keeper": spot(128, 66, "south"),
+        "hands": [spot(44, 66, "south"), spot(162, 66, "south")],
+        "door": spot(128, 108, "north"),
+        "spots": [spot(82, 106, "north"), spot(174, 106, "north"), spot(104, 109, "north"), spot(152, 109, "north")],
+        "floor_slots": [66, 82, 98, 142, 158, 174],
+        "counter_slots": [68, 84, 100, 140, 156, 172],
+    },
+}
+W, H = SIZE
+SMITHY = TRADES["smithy"]
+SMITHY_W = SMITHY["size"][0]
+FIRE = SMITHY["fire"]
+BELLOWS_AT = (SMITHY["bellows_art"]["x"], SMITHY["bellows_art"]["y"])
 W, H = 128, 112
 
 # Trodden earth and the grass at the market's edges; the far side of the
@@ -503,10 +551,6 @@ def stall_sheet(kind):
 
 # ---------------------------------------------------------------- the smithy
 
-SMITHY_W = 192
-FIRE = (1, 32, 26, 19)                  # StallScenes.TRADES.smithy.fire
-BELLOWS_AT = (30, 24)                   # bellows_art x, y
-BELLOWS_SIZE = (32, 28)                 # one frame, room px
 
 
 def forge(room, rnd):
@@ -672,15 +716,16 @@ def bellows(room, lift, rnd):
 
 
 def bellows_sheet():
-    """stall_smithy_bellows.png: open, then pressed. The frames are drawn
-    over the smithy, which has no bellows of its own, so they are the
-    bellows alone, transparent around them."""
-    frames = Image.new("RGBA", (BELLOWS_SIZE[0] * 2 * C.DENSITY, BELLOWS_SIZE[1] * C.DENSITY), (0, 0, 0, 0))
+    """stall_smithy_bellows.png: open, then pressed, each frame painted
+    guarded within its BELLOWS_FRAME rect. The frames are drawn over the
+    smithy, which has no bellows of its own, so they are the bellows alone,
+    transparent around them."""
+    fw, fh = BELLOWS_FRAME
+    frames = Image.new("RGBA", (fw * 2 * C.DENSITY, fh * C.DENSITY), (0, 0, 0, 0))
     for k, lift in enumerate((17.0, 9.0)):
-        room = C.Room(*BELLOWS_SIZE)
-        bellows(room, lift, random.Random(795))
-        frames.paste(C.shrink(room, C.PIECE_PALETTE + LEATHER, outline=0.3, ring=0.15),
-                     (k * BELLOWS_SIZE[0] * C.DENSITY, 0))
+        art, _c = G.guarded(fw, fh, lambda r, lift=lift: bellows(r, lift, random.Random(795)), C.PIECE_PALETTE + LEATHER,
+                            "bellows frame %d" % k, outline=0.3, ring=0.15)
+        frames.paste(art, (k * fw * C.DENSITY, 0))
     return frames
 
 
@@ -713,8 +758,7 @@ def dress_smithy(room, kind, rnd):
 
 
 def smithy_sheet(kind):
-    w = TRADES["smithy"]["width"]
-    room, rnd = booth(kind, w, 9790 + ROOFS.index(kind), sell_from=64)
+    room, rnd = booth(kind, SMITHY_W, 9790 + ROOFS.index(kind), sell_from=SMITHY["counter_from"])
     dress_smithy(room, kind, rnd)
     return C.shrink(room, scene_palette(kind))
 
@@ -722,78 +766,79 @@ def smithy_sheet(kind):
 # ---------------------------------------------------------------- the counter
 
 def counter(kind, w, start, seed):
-    """The counter across the booth's front from x `start`: a thick top
-    board seen from a little above (two planks, grain, worn paler in the
-    middle), its lit front edge, the front face of upright boards down to
-    the ground (Spanish brown on the Fancy stall), and the booth's front
-    posts at its ends."""
-    rnd = random.Random(seed)
-    room = C.Room(w, H)
-    wood = wood_of(kind)
-    face = OCHRE if kind == "fancy" else wood
-    dressed = kind == "fancy"
-    # The front face: upright boards.
-    x = start
-    while x < w:
-        bw = rnd.uniform(4.5, 6.5) if not dressed else 5.5
-        t = 0.5 + rnd.uniform(-0.07, 0.07)
-        room.rect(x, 78.6, min(w, x + bw), 93, ramp(face, t))
-        for _ in range(4):
-            gx = rnd.uniform(x + 0.6, x + bw - 0.6)
-            room.rect(gx, rnd.uniform(79, 84), gx + 0.25, rnd.uniform(86, 93), ramp(face, t - 0.1))
-        room.rect(x, 78.6, x + 0.5, 93, ramp(face, t + 0.16))
-        room.rect(min(w, x + bw) - 0.4, 78.6, min(w, x + bw), 93, ramp(face, 0.1))
-        if rnd.random() < 0.35 and not dressed:
-            kx, ky = x + bw / 2, rnd.uniform(82, 90)
-            room.ellipse(kx - 0.7, ky - 1.0, kx + 0.7, ky + 1.0, ramp(face, 0.2))
-        for ny in (80.4, 90.6):
-            room.rect(x + bw / 2 - 0.4, ny, x + bw / 2 + 0.3, ny + 0.6, ramp(C.IRON, 0.3))
-        x += bw
-    # The rail behind the boards' tops and a kick board at the foot.
-    room.rect(start, 91.6, w, 93, ramp(face, 0.2))
-    # The top: two planks seen from above, then the thick front edge.
-    for y0, y1 in ((67.0, 72.4), (72.4, 77.6)):
-        x = start - rnd.uniform(0, 10)
+    """The counter across the booth's front from x `start`, `w` wide sheet:
+    a thick top board seen from a little above (two planks, grain, worn
+    paler along the middle) whose near edge is just below COUNTER_Y, where
+    the goods on it stand; its lit front edge; the front face of upright
+    boards down to the ground (ochre on the Fancy stall); the booth's front
+    posts at its ends. Painted guarded: nothing may fall off the sheet."""
+    def paint(room):
+        rnd = random.Random(seed)
+        wood = wood_of(kind)
+        face = OCHRE if kind == "fancy" else wood
+        dressed = kind == "fancy"
+        top, split, edge = COUNTER_Y - 9.0, COUNTER_Y - 3.6, COUNTER_Y + 1.6
+        front, foot = edge + 1.0, 93.0
+        # The front face: upright boards.
+        x = start
         while x < w:
-            ln = rnd.uniform(30, 60)
-            a, b = max(start, x), min(w, x + ln)
-            t = 0.78 + rnd.uniform(-0.05, 0.05)
-            room.rect(a, y0, b, y1, ramp(wood, t))
-            for _ in range(int((b - a) / 3)):
-                gy, gx = rnd.uniform(y0 + 0.4, y1 - 0.4), rnd.uniform(a, max(a + 0.1, b - 4))
-                room.rect(gx, gy, min(b, gx + rnd.uniform(3, 12)), gy + 0.25, ramp(wood, t + rnd.choice((-0.1, 0.08))))
-            if rnd.random() < 0.5 and not dressed and b - a > 8:
-                kx, ky = rnd.uniform(a + 3, b - 3), (y0 + y1) / 2
-                room.ellipse(kx - 1.0, ky - 0.6, kx + 1.0, ky + 0.6, ramp(wood, t - 0.24))
-            if b < w:
-                room.rect(b - 0.35, y0, b, y1, ramp(wood, 0.25))
-            x += ln
-        room.rect(start, y0, w, y0 + 0.35, ramp(wood, 0.9))
-    room.rect(start, 72.1, w, 72.4, ramp(wood, 0.3))
-    # Worn smooth and pale along the middle, where goods slide across.
-    glow = Image.new("L", room.lay.size, 0)
-    ImageDraw.Draw(glow).rectangle((start * C.S, 69 * C.S, w * C.S, 76 * C.S), fill=36)
-    room.lay.paste(Image.new("RGBA", room.lay.size, B.rgb(wood[-1])), (0, 0),
-                   Image.composite(glow.filter(ImageFilter.GaussianBlur(2 * C.S)), Image.new("L", room.lay.size, 0),
-                                   room.lay.split()[3]))
-    room.rect(start, 77.6, w, 78.6, ramp(wood, 0.82))
-    room.rect(start, 78.3, w, 78.6, ramp(wood, 0.3))
-    room.rect(start, 78.6, w, 79.4, ramp(face, 0.12))
-    # The front posts at the ends, the full height of the booth.
-    # (Not at a trade's counter_from: a smithy's hand pulls the bellows
-    # there, in front of the counter's end.)
-    posts = [w - 4.2] if start > 0 else [0.2, w - 4.2]
-    if start > 0:
-        # The counter's open end: the top board's end grain over its end
-        # frame.
-        room.rect(start - 1.4, 67, start, 93, ramp(face, 0.3))
-        room.rect(start - 1.4, 67, start - 0.8, 93, ramp(face, 0.55))
-        room.rect(start - 1.6, 67, start, 78.6, ramp(wood, 0.5))
-        room.rect(start - 1.6, 67, start, 67.5, ramp(wood, 0.9))
-    for px in posts:
-        beam(room, px, 0, px + 4.0, 94, wood, 0.5, rnd, dressed)
-        room.rect(px - 0.3, 93.2, px + 4.3, 94.4, ramp(EARTH, 0.12))
-    return C.shrink(room, scene_palette(kind), outline=0.3)
+            bw = rnd.uniform(4.5, 6.5) if not dressed else 5.5
+            x1 = min(w, x + bw)
+            t = 0.5 + rnd.uniform(-0.07, 0.07)
+            room.rect(x, front, x1, foot, ramp(face, t))
+            for _ in range(4):
+                gx = rnd.uniform(x + 0.6, max(x + 0.7, x1 - 0.6))
+                room.rect(gx, rnd.uniform(front + 0.4, front + 5.4), gx + 0.25, rnd.uniform(front + 7.4, foot), ramp(face, t - 0.1))
+            room.rect(x, front, x + 0.5, foot, ramp(face, t + 0.16))
+            room.rect(x1 - 0.4, front, x1, foot, ramp(face, 0.1))
+            if rnd.random() < 0.35 and not dressed:
+                kx, ky = (x + x1) / 2, rnd.uniform(front + 3.4, foot - 3)
+                room.ellipse(kx - 0.7, ky - 1.0, kx + 0.7, ky + 1.0, ramp(face, 0.2))
+            for ny in (front + 1.8, foot - 2.4):
+                room.rect((x + x1) / 2 - 0.4, ny, (x + x1) / 2 + 0.3, ny + 0.6, ramp(C.IRON, 0.3))
+            x += bw
+        # The kick board at the foot.
+        room.rect(start, foot - 1.4, w, foot, ramp(face, 0.2))
+        # The top: two planks seen from above, each worn paler along its
+        # middle, then the thick front edge.
+        for y0, y1 in ((top, split), (split, edge)):
+            x = start - rnd.uniform(0, 10)
+            while x < w:
+                ln = rnd.uniform(30, 60)
+                a, b = max(start, x), min(w, x + ln)
+                t = 0.78 + rnd.uniform(-0.05, 0.05)
+                room.rect(a, y0, b, y1, ramp(wood, t))
+                room.rect(a, y0 + 1.4, b, y1 - 1.4, ramp(wood, t + 0.05))
+                for _ in range(int((b - a) / 3)):
+                    gy, gx = rnd.uniform(y0 + 0.4, y1 - 0.4), rnd.uniform(a, max(a + 0.1, b - 4))
+                    room.rect(gx, gy, min(b, gx + rnd.uniform(3, 12)), gy + 0.25, ramp(wood, t + rnd.choice((-0.1, 0.08))))
+                if rnd.random() < 0.5 and not dressed and b - a > 8:
+                    kx, ky = rnd.uniform(a + 3, b - 3), (y0 + y1) / 2
+                    room.ellipse(kx - 1.0, ky - 0.6, kx + 1.0, ky + 0.6, ramp(wood, t - 0.24))
+                if b < w:
+                    room.rect(b - 0.35, y0, b, y1, ramp(wood, 0.25))
+                x += ln
+            room.rect(start, y0, w, y0 + 0.35, ramp(wood, 0.9))
+        room.rect(start, split - 0.3, w, split, ramp(wood, 0.3))
+        room.rect(start, edge, w, front, ramp(wood, 0.82))
+        room.rect(start, front - 0.3, w, front, ramp(wood, 0.3))
+        room.rect(start, front, w, front + 0.8, ramp(face, 0.12))
+        # The front posts at the ends, the full height of the booth (not at
+        # a trade's counter_from: a smithy's hand pulls the bellows there,
+        # in front of the counter's end).
+        posts = [w - 4.2] if start > 0 else [0.2, w - 4.2]
+        if start > 0:
+            # The counter's open end: the top board's end grain over its
+            # end frame.
+            room.rect(start - 1.4, top, start, foot, ramp(face, 0.3))
+            room.rect(start - 1.4, top, start - 0.8, foot, ramp(face, 0.55))
+            room.rect(start - 1.6, top, start, front, ramp(wood, 0.5))
+            room.rect(start - 1.6, top, start, top + 0.5, ramp(wood, 0.9))
+        for px in posts:
+            beam(room, px, 0, px + 4.0, foot + 1, wood, 0.5, rnd, dressed)
+            room.rect(px - 0.2, foot + 0.2, px + 4.0, foot + 1.4, ramp(EARTH, 0.12))
+    art, _c = G.guarded(w, H, paint, scene_palette(kind), "stall_counter_%s (%d wide)" % (kind, w), outline=0.3)
+    return art
 
 
 def counter_sheet(kind):
@@ -801,8 +846,7 @@ def counter_sheet(kind):
 
 
 def counter_smithy_sheet(kind):
-    t = TRADES["smithy"]
-    return counter(kind, t["width"], t["counter_from"], 9990 + ROOFS.index(kind))
+    return counter(kind, SMITHY_W, SMITHY["counter_from"], 9990 + ROOFS.index(kind))
 
 
 # ---------------------------------------------------------------- sheets
@@ -817,59 +861,61 @@ SHEETS["stall_smithy_bellows"] = bellows_sheet
 SHEETS["stall_goods"] = G.sheet
 
 # Art px: the scenes and counters at twice their room px, the bellows two
-# frames of BELLOWS_SIZE, the goods sheet its grid at the goods density.
+# frames of BELLOWS_FRAME, the goods sheet its grid at the goods density.
 SIZES = {}
 for _k in ROOFS:
     SIZES["stall_%s" % _k] = (W * 2, H * 2)
     SIZES["stall_%s_smithy" % _k] = (SMITHY_W * 2, H * 2)
     SIZES["stall_counter_%s" % _k] = (W * 2, H * 2)
     SIZES["stall_counter_%s_smithy" % _k] = (SMITHY_W * 2, H * 2)
-SIZES["stall_smithy_bellows"] = (BELLOWS_SIZE[0] * 2 * 2, BELLOWS_SIZE[1] * 2)
+SIZES["stall_smithy_bellows"] = (BELLOWS_FRAME[0] * 2 * 2, BELLOWS_FRAME[1] * 2)
 SIZES["stall_goods"] = (G.COLUMNS * G.CELL[0] * G.DENSITY, G.ROWS * G.CELL[1] * G.DENSITY)
 
 
-def scenes_gd(path=STALL_GD):
-    """What stall_scenes.gd says about the art: its SHEETS paths, DENSITY,
-    the goods sheet, density, cell and columns, the smithy's size,
-    counter_from, fire and bellows, the GOODS table and OTHER."""
-    text = open(path, encoding="utf-8").read()
+def gd_const(text, name):
+    """A constant of stall_scenes.gd as Python data: its literal, comments
+    dropped, Vector2i and Rect2i as lists, read as JSON."""
+    m = re.search(r"\nconst %s := " % name, text)
+    if not m:
+        raise ValueError("stall_scenes.gd has no const %s" % name)
+    i = j = m.end()
+    if text[i] in "{[":
+        depth = 0
+        while True:
+            depth += text[j] in "{[("
+            depth -= text[j] in "}])"
+            if depth == 0:
+                break
+            j += 1
+        lit = text[i:j + 1]
+    else:
+        lit = text[i:text.index("\n", i)]
+    lit = re.sub(r"#[^\n]*", "", lit)
+    lit = re.sub(r"(?:Vector2i|Rect2i)\(([^)]*)\)", r"[\1]", lit)
+    lit = re.sub(r",(\s*[}\]])", r"\1", lit)
+    return json.loads(lit)
 
-    def const(name, pat=r"(\d+)"):
-        m = re.search(r"\nconst %s := %s" % (name, pat), text)
-        return m.groups() if m else None
 
-    smithy = re.search(r'"smithy": \{(.*?)\n    \},', text, re.S).group(1)
-    goods = dict((k, int(v)) for k, v in re.findall(r'"(\w+)": (\d+)', const("GOODS", r"\{([^}]*)\}")[0]))
-    fire = tuple(int(v) for v in re.search(r'"fire": Rect2i\((\d+), (\d+), (\d+), (\d+)\)', smithy).groups())
-    bellows = re.search(r'"bellows_art": \{"sheet": "([^"]+)", "x": (\d+), "y": (\d+)\}', smithy).groups()
-    return {
-        "sheets": dict(re.findall(r'"(Market Stall \(\w+\))": "([^"]+)"', text)),
-        "density": int(const("DENSITY")[0]),
-        "size": tuple(int(v) for v in const("SIZE", r"Vector2i\((\d+), (\d+)\)")),
-        "goods_sheet": const("GOODS_SHEET", r'"([^"]+)"')[0],
-        "goods_density": int(const("GOODS_DENSITY")[0]),
-        "cell": tuple(int(v) for v in const("CELL", r"Vector2i\((\d+), (\d+)\)")),
-        "columns": int(const("COLUMNS")[0]),
-        "other": int(const("OTHER")[0]),
-        "goods": goods,
-        "smithy_size": tuple(int(v) for v in re.search(r'"size": Vector2i\((\d+), (\d+)\)', smithy).groups()),
-        "counter_from": int(re.search(r'"counter_from": (\d+)', smithy).group(1)),
-        "fire": fire,
-        "bellows": (bellows[0], int(bellows[1]), int(bellows[2])),
+def declared():
+    """The declaration, as stall_scenes.gd's constants should read (tuples
+    as lists)."""
+    want = {
+        "SHEETS": SCENES, "DENSITY": DENSITY, "SIZE": SIZE, "TRADES": TRADES, "KEEPER": KEEPER, "HANDS": HANDS,
+        "DOOR": DOOR, "SPOTS": SPOTS, "FLOOR_SLOTS": FLOOR_SLOTS, "FLOOR_Y": FLOOR_Y, "COUNTER_SLOTS": COUNTER_SLOTS,
+        "COUNTER_Y": COUNTER_Y, "FEW_STEP": FEW_STEP, "GOODS_SHEET": res("stall_goods"), "GOODS_DENSITY": G.DENSITY,
+        "CELL": G.CELL, "COLUMNS": G.COLUMNS, "GOODS": G.index_table(), "OTHER": G.other_index(),
     }
-
-
-def res(name):
-    return "res://assets/interiors/%s.png" % name
+    return json.loads(json.dumps(want))
 
 
 def check(out_dir):
     """Each sheet is exactly what this script paints now and of its size;
-    stall_scenes.gd names these sheets (each roof's backdrop, its counter by
-    counter_for's rule, the bellows, the goods), at the densities painted;
-    the smithy's size, counter, fire and bellows place are the ones painted
-    here; the GOODS table and OTHER are stall_goods.GOODS's order, and the
-    goods sheet holds every good's two cells."""
+    stall_scenes.gd's constants equal the declaration exactly (the scene
+    sheets, density and size, the people's spots, the goods slots and lines,
+    the smithy's whole layout with its fire and bellows, the goods sheet,
+    its density, cell grid, GOODS table and OTHER); every scene's counter
+    (counter_for's rule) and the bellows are painted here; the goods sheet
+    holds every good's two cells, each good within the tap box's rows."""
     ok = True
     sheets = {}
     for name, build in SHEETS.items():
@@ -883,53 +929,39 @@ def check(out_dir):
             print("%s: %dx%d, not %dx%d" % ((name,) + sheet.size + SIZES[name]))
             ok = False
         sheets[name] = sheet
-    gd = scenes_gd()
-    want = {"Market Stall (%s)" % k.capitalize(): res("stall_%s" % k) for k in ROOFS}
-    if gd["sheets"] != want:
-        print("stall_scenes.gd SHEETS are %s, not %s" % (gd["sheets"], want))
-        ok = False
-    if gd["density"] != C.DENSITY or gd["size"] != (W, H):
-        print("stall_scenes.gd: DENSITY %d and SIZE %s, painted %d and %s" % (gd["density"], gd["size"], C.DENSITY, (W, H)))
-        ok = False
-    t = TRADES["smithy"]
-    if (gd["smithy_size"], gd["counter_from"], gd["fire"]) != ((t["width"], H), t["counter_from"], FIRE):
-        print("stall_scenes.gd smithy: size %s, counter_from %d, fire %s; painted %s, %d, %s"
-              % (gd["smithy_size"], gd["counter_from"], gd["fire"], (t["width"], H), t["counter_from"], FIRE))
-        ok = False
-    if gd["bellows"] != (res("stall_smithy_bellows"),) + BELLOWS_AT:
-        print("stall_scenes.gd bellows_art is %s, not %s at %s" % (gd["bellows"], res("stall_smithy_bellows"), BELLOWS_AT))
-        ok = False
-    if gd["goods_sheet"] != res("stall_goods") or gd["goods_density"] != G.DENSITY:
-        print("stall_scenes.gd goods: %s at %d, painted %s at %d" % (gd["goods_sheet"], gd["goods_density"], res("stall_goods"), G.DENSITY))
-        ok = False
-    if gd["cell"] != G.CELL or gd["columns"] != G.COLUMNS:
-        print("stall_scenes.gd goods cells %s x %d columns, painted %s x %d" % (gd["cell"], gd["columns"], G.CELL, G.COLUMNS))
-        ok = False
-    if gd["goods"] != G.index_table() or gd["other"] != G.other_index():
-        diff = sorted(set(gd["goods"].items()) ^ set(G.index_table().items()))
-        print("stall_scenes.gd GOODS / OTHER differ from stall_goods.GOODS: %s, OTHER %d vs %d" % (diff, gd["other"], G.other_index()))
-        ok = False
+    text = open(STALL_GD, encoding="utf-8").read()
+    for name, want in declared().items():
+        got = gd_const(text, name)
+        if got != want:
+            print("stall_scenes.gd %s is %s, the declared %s" % (name, got, want))
+            ok = False
+    for path in list(SCENES.values()) + [p.replace(".png", "_%s.png" % t) for p in SCENES.values() for t in TRADES]:
+        name = os.path.splitext(os.path.basename(path))[0]
+        counter_name = "stall_counter_" + name[len("stall_"):]
+        for n in (name, counter_name):
+            if n not in sheets:
+                print("%s is not painted here" % n)
+                ok = False
     goods = sheets["stall_goods"]
     alpha = goods.split()[3]
-    cw, ch = G.CELL[0] * G.DENSITY, G.CELL[1] * G.DENSITY
+    d = G.DENSITY
+    cw, ch = G.CELL[0] * d, G.CELL[1] * d
     for i in range(len(G.GOODS)):
         for cell in (2 * i, 2 * i + 1):
-            box = ((cell % G.COLUMNS) * cw, (cell // G.COLUMNS) * ch, (cell % G.COLUMNS + 1) * cw, (cell // G.COLUMNS + 1) * ch)
-            if box[3] > goods.height or alpha.crop(box).getbbox() is None:
+            x, y = (cell % G.COLUMNS) * cw, (cell // G.COLUMNS) * ch
+            box = alpha.crop((x, y, x + cw, y + ch)).getbbox()
+            if y + ch > goods.height or box is None:
                 print("stall_goods: cell %d (%s) is empty or off the sheet" % (cell, G.GOODS[i][0][0]))
+                ok = False
+            elif cell % 2 == 0 and box[1] < (G.CELL[1] - G.GOOD_ROWS) * d:
+                print("stall_goods: the good %s rises above the tap box's %d rows" % (G.GOODS[i][0][0], G.GOOD_ROWS))
                 ok = False
     return ok
 
 
 # ---------------------------------------------------------------- preview
 
-# StallScenes' people and slots (room px), for the preview.
-KEEPER = (64, 66)
-HANDS = ((30, 66), (98, 66))
-SMITHY_PEOPLE = ((36, 84), (44, 66))
-SPOTS = ((18, 106), (110, 106), (40, 109), (88, 109))
-FLOOR_SLOTS = (2, 18, 34, 78, 94, 110)
-COUNTER_SLOTS = (4, 20, 36, 76, 92, 108)
+# The goods laid out in the preview: (goods index, stock).
 WARES = [(0, "plenty"), (13, "plenty"), (5, "plenty"), (11, "few"), (7, "one"), (19, "few"), (3, "plenty"), (29, "few")]
 SMITHY_WARES = [(28, "plenty"), (24, "plenty"), (27, "few"), (29, "one"), (25, "few"), (30, "plenty")]
 
@@ -941,7 +973,7 @@ def compose(sheet, counter, goods, d, gd, wares, villager, smithy=False, bellows
     it, three customers. d and gd are the sheets' densities (1 for the pack
     art)."""
     out = sheet.resize((sheet.width * 2 // d, sheet.height * 2 // d), Image.NEAREST)
-    ox = 64 if smithy else 0
+    lay = SMITHY if smithy else {"keeper": KEEPER, "spots": SPOTS, "floor_slots": FLOOR_SLOTS, "counter_slots": COUNTER_SLOTS}
     body = villager.resize((villager.width * 2, villager.height * 2), Image.NEAREST)
 
     def put(img, x, y, density):
@@ -956,16 +988,18 @@ def compose(sheet, counter, goods, d, gd, wares, villager, smithy=False, bellows
         put(bellows.crop((0, 0, bellows.width // 2, bellows.height)), BELLOWS_AT[0], BELLOWS_AT[1], d)
     piles = [g for g, s in wares if s == "plenty"]
     loose = [(g, s) for g, s in wares if s != "plenty"]
-    for k, g in enumerate(piles[:6]):
-        put(cell(2 * g + 1), FLOOR_SLOTS[k] + ox, 62 - 32, gd)
-    for x, y in (SMITHY_PEOPLE if smithy else ()) + ((KEEPER[0] + ox, KEEPER[1]),):
-        out.alpha_composite(body, ((x - 32) * 2, (y - 44) * 2))
+    for k, g in enumerate(piles[:len(lay["floor_slots"])]):
+        put(cell(2 * g + 1), lay["floor_slots"][k], FLOOR_Y - 32, gd)
+    # The keeper (and at a smithy the smith at the anvil and a hand at
+    # their spot by the forge), feet at 44 in the body's frame.
+    for p in ([SMITHY["anvil"], SMITHY["hands"][0]] if smithy else []) + [lay["keeper"]]:
+        out.alpha_composite(body, ((p["x"] - 32) * 2, (p["y"] - 44) * 2))
     put(counter, 0, 0, d)
-    for k, (g, s) in enumerate(loose[:6]):
+    for k, (g, s) in enumerate(loose[:len(lay["counter_slots"])]):
         for n in range(1 if s == "one" else 2):
-            put(cell(2 * g), COUNTER_SLOTS[k] + ox + 4 * n, 76 - 32 + n, gd)
-    for x, y in SPOTS[:3]:
-        out.alpha_composite(body, ((x + ox - 32) * 2, (y - 44) * 2))
+            put(cell(2 * g), lay["counter_slots"][k] + FEW_STEP[0] * n, COUNTER_Y - 32 + FEW_STEP[1] * n, gd)
+    for p in lay["spots"][:3]:
+        out.alpha_composite(body, ((p["x"] - 32) * 2, (p["y"] - 44) * 2))
     return out
 
 

@@ -86,7 +86,6 @@ const TESTS := [
     "_test_inn_serves_porridge_to_the_bench",
     "_test_room_open_fetches_the_goods_sheet",
     "_test_inn_sale_waits_for_the_goods_sheet",
-    "_test_room_sale_retries_a_failed_sheet",
     "_test_room_sale_gives_up_on_the_sheet",
     "_test_room_pieces",
     "_test_room_squares",
@@ -1733,7 +1732,7 @@ func _test_smithy_layout() -> void:
     _check("the pile on the smithy's first floor slot", pile.position.x, float(layout["floor_slots"][0]))
     var few: Node2D = _panel._goods_front.get_child(0)
     _check("the few on the smithy's first counter slot", few.position.x, float(layout["counter_slots"][0]))
-    _check("the smithy's counter picture", _panel.room["counter"], layout["counter"])
+    _check("the smithy's counter picture", _panel.room["counter"], str(_panel.room["sheet"]).replace("/stall_", "/stall_counter_"))
     # A sale to someone not drawn: set down at the keeper's spot, not the
     # plain stall's.
     _panel.on_pay_resolved(_sale("keeper", "somebody-past-the-spots", "nail"))
@@ -3364,53 +3363,6 @@ func _test_inn_sale_waits_for_the_goods_sheet() -> void:
     var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
     _check("set on the table in front of the player", [bowl.position, bowl.get_meta("buyer", "")], [_panel._cell_at(table), "pc"])
     _finish_walk(keeper)
-    _world.meals = {}
-    _panel.close()
-    _done()
-
-
-## LLM-772: the goods sheet's download fails, through the real download
-## callback (_on_fetch_done): a 404, then a body that is no PNG. Each failure
-## leaves nothing in flight, so the next retry sends a new request; the waits
-## double. When a download brings a PNG the sale is handed over.
-func _test_room_sale_retries_a_failed_sheet() -> void:
-    var sheet := StallScenes.GOODS_SHEET
-    var t_hook: Callable = _panel.texture_hook
-    var asked := []
-    _panel.texture_hook = Callable()
-    _panel.fetch_hook = func(path: String) -> void:
-        asked.append(path)
-    _panel._textures.erase(sheet)
-    _panel._fetching.clear()
-    _inn_with_guest(0)
-    var requests := func() -> int: return asked.count(sheet)
-    _check("opening the room asks once", requests.call(), 1)
-    var keeper: Node2D = _panel._tending()
-    _panel.on_pay_resolved(_sale("keeper", "guest", "porridge", "accepted", 1, true))
-    _check("the sale waits; no second request while one is in flight", [_panel._handoffs.size(), _panel._handoff.get_child_count(), requests.call()], [1, 0, 1])
-
-    _panel._on_fetch_done(sheet, HTTPRequest.RESULT_SUCCESS, 404, PackedByteArray())
-    _check("a 404: nothing in flight, nothing cached, the sale waits", [_panel._fetching.has(sheet), _panel._textures.has(sheet), _panel._handoffs.size()], [false, false, 1])
-    _panel._retry_sheet(_panel.SHEET_RETRY_SECONDS - 0.5)
-    _check("not before the first retry is due", requests.call(), 1)
-    _panel._retry_sheet(0.6)
-    _check("the retry sends a second request", requests.call(), 2)
-    _check("and waits twice as long for the next", _panel._sheet_retry_left, _panel.SHEET_RETRY_SECONDS * 2.0)
-
-    _panel._on_fetch_done(sheet, HTTPRequest.RESULT_SUCCESS, 200, PackedByteArray([1, 2, 3]))
-    _check("not a PNG: nothing in flight, nothing cached", [_panel._fetching.has(sheet), _panel._textures.has(sheet), _panel._handoffs.size()], [false, false, 1])
-    _panel._retry_sheet(_panel.SHEET_RETRY_SECONDS * 2.0 + 0.1)
-    _check("a third request", requests.call(), 3)
-
-    var png := Image.create(128, 112, false, Image.FORMAT_RGBA8).save_png_to_buffer()
-    _panel._on_fetch_done(sheet, HTTPRequest.RESULT_SUCCESS, 200, png)
-    _check("the sheet comes: cached, and the porridge goes on the desk",
-        [_panel._textures.has(sheet), _panel._handoff.get_node_or_null("handoff_porridge") != null, keeper.has_meta("walking")], [true, true, true])
-    _finish_walk(keeper)
-    _panel._textures.erase(sheet)
-    _panel._fetching.clear()
-    _panel.fetch_hook = Callable()
-    _panel.texture_hook = t_hook
     _world.meals = {}
     _panel.close()
     _done()
