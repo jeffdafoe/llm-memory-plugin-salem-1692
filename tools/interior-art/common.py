@@ -498,7 +498,8 @@ def hearth(room, x0, x1, top, wall_bottom, fire_box, rnd):
         while x < x1:
             w = rnd.uniform(4.5, 8.0)
             a, b = max(x0, x + 0.3), min(x1, x + w - 0.3)
-            if b - a > 1.0:
+            # A last course under 0.6 px tall would draw an inverted stone.
+            if b - a > 1.0 and y - t0 > 0.6:
                 tone = 0.5 + rnd.uniform(-0.18, 0.16)
                 room.d.rounded_rectangle((a * S, (t0 + 0.3) * S, b * S, (y - 0.3) * S), radius=int(1.2 * S),
                                          fill=ramp(STONE, tone))
@@ -773,17 +774,24 @@ def trestle_table(room, x, y, w, h, rnd=None, things=True):
     room.rect(x, y + top_h, x + w, y + top_h + 2.4, ramp(OAK, 0.32))
     room.rect(x, y + top_h + 1.8, x + w, y + top_h + 2.4, ramp(OAK, 0.12))
     if things:
-        # A trencher and spoon, a jug, a loaf.
+        # A trencher and spoon at the left, a jug at the right end, a loaf
+        # between them ending clear of the jug, so none covers another at
+        # any table width.
         room.ellipse(x + 4, y + 3.5, x + 12, y + 8.5, ramp(OAK, 0.5))
         room.ellipse(x + 5, y + 4.2, x + 11, y + 7.6, ramp(OAK, 0.62))
         room.line([(x + 9, y + 9.2), (x + 13, y + 7.6)], ramp(OAK, 0.4), 0.5)
-        jx = x + w - 8
+        jx = x + w - 5
+        lx1 = jx - 3.0
+        lx0 = max(x + 13.6, lx1 - 7)
+        # A table under 26 room px has no room for the loaf between the
+        # trencher and the jug, so it has none.
+        if lx1 - lx0 >= 4:
+            room.ellipse(lx0, y + 2.2, lx1, y + 6.4, ramp(STRAW, 0.55))
+            room.ellipse(lx0 + 0.6, y + 2.4, lx1 - 2, y + 4.4, ramp(STRAW, 0.85))
+            room.line([(lx0 + 2, y + 3.0), (lx0 + 3, y + 5.4)], ramp(STRAW, 0.3), 0.3)
         room.ellipse(jx - 2.2, y + 1.0, jx + 2.2, y + 7.0, ramp(REDWARE, 0.5))
         room.ellipse(jx - 1.6, y + 1.4, jx - 0.2, y + 4.0, ramp(REDWARE, 0.85))
         room.rect(jx - 1.1, y + 0.2, jx + 1.1, y + 1.4, ramp(REDWARE, 0.42))
-        room.ellipse(x + 14, y + 2.2, x + 21, y + 6.4, ramp(STRAW, 0.55))
-        room.ellipse(x + 14.6, y + 2.4, x + 19, y + 4.4, ramp(STRAW, 0.85))
-        room.line([(x + 16, y + 3.0), (x + 17, y + 5.4)], ramp(STRAW, 0.3), 0.3)
 
 
 def ladder_chair(room, x, y, w, h, back_left=True):
