@@ -225,30 +225,41 @@ FRAMES = {"sign-post": (POST_FRAME[0] * DENSITY, POST_FRAME[1] * DENSITY),
 MIGRATION = os.path.join(B.ROOT, "migrations", "LLM-968n-painted-signs_up.sql")
 
 
+STATE_ROW = re.compile(r"\('([0-9a-f-]{36})', '([^']+)', '([^']+)', (\d+), (\d+), (\d+), (\d+), \d+, [\d.]+\)")
+
+
 def migration_states(path=MIGRATION):
-    """The migration's llm968n_state rows, as {(asset id, state): (sheet,
-    src_x, src_y, src_w, src_h)}."""
+    """The migration's llm968n_state rows, as ({(asset id, state): (sheet,
+    src_x, src_y, src_w, src_h)}, problems). Every row of the VALUES block
+    must parse (comments and the commas between rows aside), and no
+    (asset, state) may appear twice."""
     text = open(path, encoding="utf-8").read()
     m = re.search(r"INSERT INTO llm968n_state VALUES(.*?);", text, re.S)
     if not m:
-        return {}
-    rows = {}
-    for r in re.finditer(r"\('([0-9a-f-]{36})', '([^']+)', '([^']+)', (\d+), (\d+), (\d+), (\d+), \d+, [\d.]+\)", m.group(1)):
-        rows[(r.group(1), r.group(2))] = (r.group(3), int(r.group(4)), int(r.group(5)), int(r.group(6)), int(r.group(7)))
-    return rows
+        return {}, ["the migration has no llm968n_state VALUES block"]
+    body = re.sub(r"--[^\n]*", "", m.group(1))
+    rows, problems = {}, []
+    for r in STATE_ROW.finditer(body):
+        key = (r.group(1), r.group(2))
+        if key in rows:
+            problems.append("migration state %s %s is written twice" % key)
+        rows[key] = (r.group(3), int(r.group(4)), int(r.group(5)), int(r.group(6)), int(r.group(7)))
+    left = STATE_ROW.sub("", body).replace(",", "").split()
+    if left:
+        problems.append("migration llm968n_state has text that is not a state row: %s" % " ".join(left)[:80])
+    return rows, problems
 
 
 def migration_problems(path=MIGRATION):
     """The migration must point every state at its frame in LAYOUT (the
     sheet, the frame's offset in the row, the frame size), and at nothing
     else."""
-    rows = migration_states(path)
+    rows, out = migration_states(path)
     want = {}
     for name, frames in LAYOUT.items():
         fw, fh = FRAMES[name]
         for i, (asset_id, state) in enumerate(frames):
             want[(asset_id, state)] = ("res://assets/trees/%s.png" % name, i * fw, 0, fw, fh)
-    out = []
     for key in sorted(set(want) | set(rows)):
         if rows.get(key) != want.get(key):
             out.append("migration state %s %s is %s, the layout says %s" % (key[0], key[1], rows.get(key), want.get(key)))
@@ -284,13 +295,13 @@ def check(out_dir):
     fw, fh = FRAMES["sign-post"]
     # The arm's tip is the art right of the post (frame x 64 on, above the
     # footing); crooked, it hangs well below where it points straight.
-    tips = []
-    for i in range(2):
+    tips = {}
+    for i, (_, state) in enumerate(LAYOUT["sign-post"]):
         box = post.crop((i * fw + 64, 0, (i + 1) * fw, fh // 2)).getbbox()
-        tips.append(box[3] if box else 0)
-    if tips[1] < tips[0] + 16:
-        print("sign-post: the crooked frame's arm (tip down to row %d) does not hang below the default's (row %d)"
-              % (tips[1], tips[0]))
+        tips[state] = box[3] if box else 0
+    if tips.get("crooked", 0) < tips.get("default", 0) + 16:
+        print("sign-post: the crooked frame's arm (tip down to row %s) does not hang below the default's (row %s)"
+              % (tips.get("crooked"), tips.get("default")))
         ok = False
     for problem in migration_problems():
         print(problem)
