@@ -3236,6 +3236,14 @@ func _test_inn_animations() -> void:
         if p.has_meta("fps"):
             playing += 1
     _check("the Tavern's fire only, on the wall", [_panel._anims.get_child_count(), playing], [1, 0])
+    # Upstairs straight from the common room: a room without anims has none,
+    # and the fire did not stay behind.
+    _panel.open(_sid, "hall")
+    playing = 0
+    for p in _pieces():
+        if p.has_meta("fps"):
+            playing += 1
+    _check("the Tavern's hall has none", [_panel.room.get("title", ""), _panel._anims.get_child_count(), playing], ["Upstairs", 0, 0])
     _panel.close()
     _done()
 
@@ -3445,9 +3453,17 @@ func _test_room_pieces() -> void:
     _panel._stretch = Vector2.ONE
     _panel._scene.position = Vector2.ZERO
     _panel._clip.position = Vector2.ZERO
+    # The probes land on the painted furniture itself, not on floor between
+    # it (the window here draws blank sheets; the packed art is read
+    # directly, at its density).
+    var art := (load("res://assets/interiors/tavern_pieces.png") as Texture2D).get_image()
+    var on_art := func(at: Vector2) -> bool: return art.get_pixelv(Vector2i(at * d)).a > 0.5
+    var over_bar := keeper.position + Vector2(0, -16)
+    _check("the probes are on the bar's, the table's and the bar's art behind the keeper",
+        [on_art.call(Vector2(126, 104)), on_art.call(Vector2(36, 74)), on_art.call(over_bar)], [true, true, true])
     _check("a tap on the bar's bare end finds nothing", _panel.thing_at(Vector2(126, 104) * 4), {})
     _check("a tap on the table's far side finds nothing", _panel.thing_at(Vector2(36, 74) * 4), {})
-    _check("a tap on the keeper over the bar finds them", str(_panel.thing_at((keeper.position + Vector2(0, -16)) * 4).get("id", "")), "keeper")
+    _check("a tap on the keeper over the bar finds them", str(_panel.thing_at(over_bar * 4).get("id", "")), "keeper")
     # A newcomer redraws the people; the furniture stays as it was.
     var before := _pieces()
     _person("newcomer", _farmer(), _sid)

@@ -49,7 +49,11 @@ DOOR = ["24160f", "341f15", "462a1c", "583626", "6a4430", "7c533c"]
 ROOM_PALETTE = C.ROOM_PALETTE + LOG + DINGY + DOOR + C.FIRE[2:]
 PIECE_PALETTE = C.PIECE_PALETTE + C.GLASS + C.SOOT + C.HERB + DINGY + C.FIRE[2:]
 
-FIRE = "res://assets/interiors/tavern_fire.png"
+# The hearth fire: its anim entry in interior_rooms.gd exactly (a wall anim,
+# so no sort_y), and the size of one frame in room px. tavern_fire.png is
+# painted from it and --check holds the entry to it.
+FIRE = {"sheet": "res://assets/interiors/tavern_fire.png", "frames": 4, "fps": 8.0, "x": 40, "y": 46}
+FIRE_FRAME = (24, 18)
 COMMON_KEY = "019dbcd2-c0b1-7bf9-98c2-0610cfb7f5e9"
 STAIR_W = 28                # the stair passage at the common room's left (build_rooms.gd TAVERN_STAIR_W)
 HALL_PLATES = ("I", "II", "", "III", "IV")   # doors x = 16 + 48 i; the keeper's quarters in the middle
@@ -444,8 +448,9 @@ def common_room(seed=1692):
     log_wall(room, 0, w, 4, wall - 2, rnd)
     C.timber(room, 0, 0, w, 4.6, 0.3, rnd)
     stair_passage(room, 0, STAIR_W, 0, wall + 1, rnd)
-    C.hearth(room, 30, 72, 0, wall, (40, 46, 24, 18), rnd)
-    rubble_breast(room, 30, 72, 0, wall, (40, 46, 24, 18), rnd)
+    fire_box = (FIRE["x"], FIRE["y"]) + FIRE_FRAME
+    C.hearth(room, 30, 72, 0, wall, fire_box, rnd)
+    rubble_breast(room, 30, 72, 0, wall, fire_box, rnd)
     fowling_piece(room, 33, 69, 31)
     for cx in (41, 63):
         candle(room, cx, 42.8, lit=True, h=4.4)
@@ -1167,7 +1172,7 @@ ROOMS = {
             ((22, 72, 28, 32, 96), _paint(round_table)),
         ],
         "covers": {},
-        "anims": [(FIRE, 4, 40, 46)],
+        "anims": [FIRE],
         "bar": (90, 94),
         "reach": (102, 80),
     },
@@ -1198,29 +1203,49 @@ ROOMS = {
 }
 
 
+def piece_groups(pieces):
+    """The pieces as paint_pieces is given them: [(rect, painter)], pieces
+    that share a painter object joined into one rect. The declared rects are
+    held to paint_pieces' rule first (no two overlap, the members of a group
+    included), and a group's rects must tile their joined rect exactly, so a
+    split moved by a pixel (a gap or an overlap between the bar's arms) is
+    refused rather than painted over. Raises ValueError."""
+    rects = [r[:4] for r, _p in pieces]
+    for i, (ax, ay, aw, ah) in enumerate(rects):
+        for bx, by, bw, bh in rects[i + 1:]:
+            if ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah:
+                raise ValueError("pieces %s and %s overlap" % ((ax, ay, aw, ah), (bx, by, bw, bh)))
+    groups = []
+    for (x, y, w, h, _sort), painter in pieces:
+        for g in groups:
+            if g[1] is painter:
+                g[0].append((x, y, w, h))
+                break
+        else:
+            groups.append([[(x, y, w, h)], painter])
+    out = []
+    for members, painter in groups:
+        x0, y0 = min(r[0] for r in members), min(r[1] for r in members)
+        x1, y1 = max(r[0] + r[2] for r in members), max(r[1] + r[3] for r in members)
+        if sum(r[2] * r[3] for r in members) != (x1 - x0) * (y1 - y0):
+            raise ValueError("pieces %s painted as one do not fill %s" % (members, (x0, y0, x1 - x0, y1 - y0)))
+        out.append(((x0, y0, x1 - x0, y1 - y0), painter))
+    return out
+
+
 def pieces_sheet(key, seed):
     """A room's pieces through the kit's paint_pieces, pieces that share a
     painter painted once over their joined rect."""
     spec = ROOMS[key]
     rnd = random.Random(seed)
-    groups = []
-    for (x, y, w, h, _sort), painter in spec["pieces"]:
-        for g in groups:
-            if g[1] is painter:
-                gx, gy, gw, gh = g[0]
-                nx, ny = min(gx, x), min(gy, y)
-                g[0] = (nx, ny, max(gx + gw, x + w) - nx, max(gy + gh, y + h) - ny)
-                break
-        else:
-            groups.append([(x, y, w, h), painter])
-    return C.paint_pieces(*spec["size"], [(r, (lambda room, px, py, pw, ph, p=p: p(room, px, py, pw, ph, rnd))) for r, p in groups],
-                          PIECE_PALETTE)
+    return C.paint_pieces(*spec["size"], [(r, (lambda room, px, py, pw, ph, p=p: p(room, px, py, pw, ph, rnd)))
+                                         for r, p in piece_groups(spec["pieces"])], PIECE_PALETTE)
 
 
 SHEETS = {
     "tavern_common": common_room,
     "tavern_pieces": lambda: pieces_sheet(COMMON_KEY, 1693),
-    "tavern_fire": lambda: fire_strip(24, 18, 4, seed=17),
+    "tavern_fire": lambda: fire_strip(*FIRE_FRAME, FIRE["frames"], seed=17),
     "tavern_hall_common": hall_room,
     "tavern_hall_pieces": lambda: pieces_sheet("tavern_hall", 808),
     "tavern_hall_door_open": hall_door_open,
@@ -1236,21 +1261,52 @@ SIZES = {
 }
 
 
+# Each anim strip painted here: its frame in room px.
+ANIM_FRAMES = {"tavern_fire": FIRE_FRAME}
+
+
 def _entry_body(key):
     text = open(C.ROOMS_GD, encoding="utf-8").read()
     return re.search(r'\n    "%s": \{(.*?)\n    \},' % re.escape(key), text, re.S).group(1)
+
+
+def _entry_anims(body):
+    """The entry's anims, each as a dict of all its fields (strings, ints,
+    floats), so a changed fps or an added sort_y shows."""
+    m = re.search(r'"anims": \[(.*?)\n        \],', body, re.S)
+    anims = []
+    for item in re.findall(r'\{([^{}]*)\}', m.group(1) if m else ""):
+        fields = {}
+        for k, v in re.findall(r'"(\w+)": ("[^"]*"|-?[\d.]+)', item):
+            fields[k] = v.strip('"') if v.startswith('"') else (float(v) if "." in v else int(v))
+        anims.append(fields)
+    return anims
 
 
 def check(out_dir):
     """Each sheet is exactly what this script paints now and of its size;
     each room's entry in interior_rooms.gd names these sheets (and the
     hall's open door) at this density and size, and has exactly the
-    declared pieces (rects and sort lines, in order), covers, anims (sheet,
-    frames, position) and bar / reach points; every piece rect holds art;
-    every cover rect lies inside its bed's piece and holds the blanket; the
-    open door covers the closed one whole; the fire is whole frames of its
+    declared pieces (rects and sort lines, in order), covers, anims (every
+    field: sheet, frames, fps, position, and no sort_y unless declared) and
+    bar / reach points; the bar's arms tile its joined rect (a split moved
+    by a pixel is refused); every piece rect holds art; every cover rect
+    lies inside its bed's piece and holds the blanket; the open door covers
+    the closed one whole; each anim strip is its declared frames of its
     declared size; the bar's sale point is on the counter."""
     ok = True
+    # The grouping refuses the bar's split moved a pixel either way: a gap
+    # between the arms, or an overlap.
+    bar = ROOMS[COMMON_KEY]["pieces"]
+    for dy in (-1, 1):
+        (x, y, w, h, s), p = bar[1]
+        moved = [bar[0], ((x, y + dy, w, h - dy, s), p)] + bar[2:]
+        try:
+            piece_groups(moved)
+            print("the bar's split moved by %d px was not refused" % dy)
+            ok = False
+        except ValueError:
+            pass
     sheets = {}
     for name, build in SHEETS.items():
         sheet = Image.open(os.path.join(out_dir, name + ".png")).convert("RGBA")
@@ -1281,7 +1337,7 @@ def check(out_dir):
                 ("size", entry["size"], spec["size"]),
                 ("pieces", entry["pieces"], [r for r, _p in spec["pieces"]]),
                 ("covers", entry["covers"], spec["covers"]),
-                ("anims", entry["anims"], spec["anims"]),
+                ("anims", _entry_anims(body), spec["anims"]),
                 ("bar and reach", points, {k: spec[k] for k in ("bar", "reach") if k in spec})):
             if got != expect:
                 print("%s: interior_rooms.gd %s are %s, the painted %s" % (key, label, got, expect))
@@ -1305,11 +1361,11 @@ def check(out_dir):
         if door and sheets[door].split()[3].getextrema()[0] != 255:
             print("%s: the open door does not cover the closed one whole" % key)
             ok = False
-        for path, frames, _x, _y in spec["anims"]:
-            name = os.path.splitext(os.path.basename(path))[0]
-            strip = sheets.get(name)
-            if strip is None or strip.width % frames:
-                print("%s: anim %s is not painted here as %d whole frames" % (key, path, frames))
+        for a in spec["anims"]:
+            name = os.path.splitext(os.path.basename(a["sheet"]))[0]
+            strip, frame = sheets.get(name), ANIM_FRAMES.get(name)
+            if strip is None or frame is None or strip.size != (a["frames"] * frame[0] * d, frame[1] * d):
+                print("%s: anim %s is not painted here as %d frames of %s" % (key, a["sheet"], a["frames"], frame))
                 ok = False
         if "bar" in spec:
             bx, by = spec["bar"]
