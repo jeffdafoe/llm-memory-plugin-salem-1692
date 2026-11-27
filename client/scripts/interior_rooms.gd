@@ -65,14 +65,16 @@ const ROOMS := {
         "bar": {"x": 50, "y": 70},
         "reach": {"x": 48, "y": 66},
         "pieces": [
-            # The desk with its bottle; the keeper stands behind it.
+            # The desk; the keeper stands behind it.
             {"x": 20, "y": 54, "w": 48, "h": 36, "sort_y": 89},
-            # Table and bench: the bench sitters sort in front of both.
-            {"x": 74, "y": 74, "w": 48, "h": 32, "sort_y": 104},
+            # Table and bench: the bench sitters sort in front of both. The
+            # table stops where the bench begins (rects are disjoint: the
+            # window cuts each piece from its own pixels).
+            {"x": 74, "y": 74, "w": 48, "h": 24, "sort_y": 104},
             {"x": 74, "y": 98, "w": 48, "h": 16, "sort_y": 109},
-            # Rocking chair and basket.
-            {"x": 0, "y": 78, "w": 32, "h": 32, "sort_y": 101},
-            {"x": 26, "y": 86, "w": 16, "h": 26, "sort_y": 111},
+            # The great chair, clear of the desk, and the work basket below it.
+            {"x": 0, "y": 78, "w": 20, "h": 32, "sort_y": 101},
+            {"x": 26, "y": 90, "w": 16, "h": 22, "sort_y": 111},
         ],
         "anims": [
             {"sheet": "res://assets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 96, "y": 38},

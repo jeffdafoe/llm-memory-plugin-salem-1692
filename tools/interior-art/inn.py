@@ -322,7 +322,9 @@ def common_room(seed=1692):
     C.wear(room, 66, 104, 10, 8, 30)
     C.light_pool(room, 54, wall + 1, 70, wall + 20, 70)
     C.wall_foot(room, 0, w, wall)
-    inn_hearth(room, 84, 127, 0, wall, (96, 38, 16, 16), rnd)
+    # The firebox is where the fire anim plays (ROOMS anims).
+    fire = ROOMS[INN_KEY]["anims"][0]
+    inn_hearth(room, 84, 127, 0, wall, (fire[2], fire[3], 16, 16), rnd)
     # A mantel board on the breast with the house's pewter, its shadow on
     # the stone under it.
     room.rect(87, 32.6, 124, 34.4, ramp(C.SOOT, 0.3))
@@ -336,7 +338,7 @@ def common_room(seed=1692):
     room.speckle(74.6, 75.2, 98.4, 83, 60, C.STONE, (0.38, 0.6), rnd)
     room.line([(85, 74.4), (86.4, 83.4)], ramp(C.STONE, 0.25), 0.3)
     # Shadows, cast down and right: the desk, table, form, chair, basket.
-    for x0, y0, x1, y1 in ((23, 86, 72, 92), (77, 101, 126, 108), (77, 109, 126, 113), (3, 103, 27, 109),
+    for x0, y0, x1, y1 in ((23, 86, 72, 92), (77, 94, 125, 99.5), (77, 109, 126, 113), (2, 102, 22, 108),
                            (30, 107, 45, 112)):
         room.shadow(x0, y0, x1, y1, 235)
     return C.shrink(room, ROOM_PALETTE)
@@ -418,8 +420,8 @@ def keeper_desk(room, x, y, w, h, rnd):
     room.rect(x + w - 2.0, top0, x + w, top1, ramp(C.OAK, 0.6))
     top_light(room, x, top0, x + w, top1, rnd)
     # The moulded front edge: a lit round, a dark cove under it.
-    room.rect(x - 0.4, top1, x + w + 0.4, top1 + 1.2, ramp(C.OAK, 0.84))
-    room.rect(x - 0.4, top1 + 1.2, x + w + 0.4, top1 + 2.4, ramp(C.OAK, 0.3))
+    room.rect(x, top1, x + w, top1 + 1.2, ramp(C.OAK, 0.84))
+    room.rect(x, top1 + 1.2, x + w, top1 + 2.4, ramp(C.OAK, 0.3))
     # The front: stiles and rails, three fielded panels.
     room.rect(x + 0.6, fy0, x + w - 0.6, fy1, ramp(C.OAK, 0.44))
     room.rect(x + 0.6, fy0, x + 1.4, fy1, ramp(C.OAK, 0.66))
@@ -451,28 +453,29 @@ def keeper_desk(room, x, y, w, h, rnd):
     room.ellipse(x + 16, top1 - 6.6, x + 18.6, top1 - 4.4, ramp(C.IRON, 0.25))
     room.line([(x + 17.2, top1 - 5.8), (x + 19.6, top1 - 11.0)], ramp(C.LINEN, 0.9), 0.5)
     room.line([(x + 17.8, top1 - 7.4), (x + 19.6, top1 - 11.0)], ramp(C.LINEN, 0.6), 0.35)
-    bellarmine(room, x + w - 6, top0 + 6.5)
+    bellarmine(room, x + w - 6, top0 + 7.6)
 
 
 def joined_table(room, x, y, w, h, rnd):
     """A joined oak table seen from the front at a slant: a three-board top
     with a moulded edge, a frieze, turned legs on a low stretcher. On it two
     pewter tankards and a clay pipe toward the back; the places in front of
-    the form are left clear for what is served."""
-    top0, top1 = y, y + 18
-    room.rect(x + 3, y + h - 6.5, x + w - 3, y + h - 5.0, ramp(C.OAK, 0.34))
-    room.rect(x + 3, y + h - 6.5, x + w - 3, y + h - 6.0, ramp(C.OAK, 0.58))
+    the form are left clear for what is served. The form stands in front of
+    it, so the legs end where the form's rect begins."""
+    top0, top1 = y, y + 14
+    room.rect(x + 3, y + h - 3.0, x + w - 3, y + h - 1.8, ramp(C.OAK, 0.34))
+    room.rect(x + 3, y + h - 3.0, x + w - 3, y + h - 2.5, ramp(C.OAK, 0.58))
     for lx in (x + 3.4, x + w - 3.4):
-        turned(room, lx, top1 + 2.0, y + h - 0.5, 1.5, 0.5)
-    room.rect(x + 1.5, top1 + 1.8, x + w - 1.5, top1 + 5.2, ramp(C.OAK, 0.46))
-    room.rect(x + 1.5, top1 + 3.2, x + w - 1.5, top1 + 3.6, ramp(C.OAK, 0.26))
-    room.rect(x + 1.5, top1 + 4.8, x + w - 1.5, top1 + 5.2, ramp(C.OAK, 0.22))
-    for k, (b0, b1) in enumerate(((top0, top0 + 6), (top0 + 6, top0 + 12), (top0 + 12, top1))):
+        turned(room, lx, top1 + 2.0, y + h - 0.3, 1.5, 0.5)
+    room.rect(x + 1.5, top1 + 1.8, x + w - 1.5, top1 + 4.8, ramp(C.OAK, 0.46))
+    room.rect(x + 1.5, top1 + 3.0, x + w - 1.5, top1 + 3.4, ramp(C.OAK, 0.26))
+    room.rect(x + 1.5, top1 + 4.4, x + w - 1.5, top1 + 4.8, ramp(C.OAK, 0.22))
+    for k, (b0, b1) in enumerate(((top0, top0 + 5), (top0 + 5, top0 + 10), (top0 + 10, top1))):
         room.rect(x, b0, x + w, b1, ramp(C.OAK, (0.86, 0.8, 0.83)[k]))
         if k:
             room.rect(x, b0 - 0.2, x + w, b0 + 0.25, ramp(C.OAK, 0.42))
     for _ in range(7):
-        gy, gx = rnd.uniform(top0 + 0.6, top1 - 0.6), rnd.uniform(x, x + w - 6)
+        gy, gx = rnd.uniform(top0 + 0.6, top1 - 0.6), rnd.uniform(x, x + w - 14)
         room.rect(gx, gy, gx + rnd.uniform(6, 14), gy + 0.25, ramp(C.OAK, 0.74))
     # Rings left by wet tankards.
     for _ in range(3):
@@ -483,11 +486,11 @@ def joined_table(room, x, y, w, h, rnd):
     room.rect(x, top0, x + 0.7, top1, ramp(C.OAK, 0.9))
     room.rect(x + w - 2.0, top0, x + w, top1, ramp(C.OAK, 0.6))
     top_light(room, x, top0, x + w, top1, rnd)
-    room.rect(x - 0.4, top1, x + w + 0.4, top1 + 1.0, ramp(C.OAK, 0.9))
-    room.rect(x - 0.4, top1 + 1.0, x + w + 0.4, top1 + 1.8, ramp(C.OAK, 0.2))
-    room.rect(x + w - 1.5, top1 + 1.8, x + w - 0.2, top1 + 5.2, ramp(C.OAK, 0.18))
-    tankard(room, x + 23, top0 + 7)
-    tankard(room, x + 28, top0 + 6)
+    room.rect(x, top1, x + w, top1 + 1.0, ramp(C.OAK, 0.9))
+    room.rect(x, top1 + 1.0, x + w, top1 + 1.8, ramp(C.OAK, 0.2))
+    room.rect(x + w - 1.5, top1 + 1.8, x + w - 0.2, top1 + 4.8, ramp(C.OAK, 0.18))
+    tankard(room, x + 23, top0 + 6.5)
+    tankard(room, x + 28, top0 + 5.6)
     room.line([(x + 39, top0 + 4.5), (x + 45, top0 + 3.2)], ramp(C.LINEN, 0.9), 0.5)
     room.ellipse(x + 38, top0 + 3.8, x + 40.2, top0 + 5.6, ramp(C.LINEN, 0.75))
 
@@ -500,7 +503,7 @@ def form(room, x, y, w, h, rnd):
     room.rect(x + 4, y + h - 4.5, x + w - 4, y + h - 3.4, ramp(C.OAK, 0.36))
     room.rect(x + 0.5, y + 1, x + w - 0.5, y + 6, ramp(C.OAK, 0.74))
     for _ in range(6):
-        gy, gx = rnd.uniform(y + 1.4, y + 5.6), rnd.uniform(x, x + w - 6)
+        gy, gx = rnd.uniform(y + 1.4, y + 5.6), rnd.uniform(x + 0.5, x + w - 12.5)
         room.rect(gx, gy, gx + rnd.uniform(4, 12), gy + 0.25, ramp(C.OAK, rnd.choice((0.6, 0.88))))
     room.rect(x + 0.5, y + 1, x + w - 0.5, y + 1.6, ramp(C.OAK, 0.98))
     room.rect(x + 0.2, y + 6, x + w - 0.2, y + 7.1, ramp(C.OAK, 0.86))
@@ -515,8 +518,8 @@ def great_chair(room, x, y, w, h, rnd):
     a front post, turned legs and stretchers."""
     seat = y + 15.2               # the seat's top
     legs = y + 27.5               # the feet on the floor
-    bx = x + 4.2                  # the back posts
-    fx = x + 21.0                 # the front posts
+    bx = x + 3.4                  # the back posts
+    fx = x + 16.2                 # the front posts
     # Stretchers low down, then the far legs.
     room.rect(bx, legs - 5.0, fx, legs - 4.2, ramp(C.OAK, 0.34))
     room.rect(bx, legs - 2.4, fx, legs - 1.6, ramp(C.OAK, 0.3))
@@ -528,8 +531,8 @@ def great_chair(room, x, y, w, h, rnd):
         room.rect(bx - 0.6, sy, bx + 3.6, sy + 1.2, ramp(C.OAK, 0.72))
         room.rect(bx - 0.6, sy, bx + 3.6, sy + 0.4, ramp(C.OAK, 0.92))
     turned(room, bx, y + 1.5, legs, 1.2, 0.55, profile=[(0, 0.9), (0.05, 1.0), (0.08, 0.6), (0.12, 0.9), (1, 0.9)])
-    room.ellipse(bx - 1.3, y - 0.4, bx + 1.3, y + 2.2, ramp(C.OAK, 0.72))
-    room.ellipse(bx - 0.8, y - 0.1, bx + 0.2, y + 0.9, ramp(C.OAK, 0.98))
+    room.ellipse(bx - 1.3, y + 0.2, bx + 1.3, y + 2.6, ramp(C.OAK, 0.72))
+    room.ellipse(bx - 0.8, y + 0.5, bx + 0.2, y + 1.4, ramp(C.OAK, 0.98))
     # The rush seat and its cushion.
     room.rect(bx + 0.8, seat - 2.6, fx + 0.8, seat + 0.6, ramp(C.STRAW, 0.6))
     for k in range(int((fx - bx) * 2)):
@@ -551,10 +554,10 @@ def work_basket(room, x, y, w, h, rnd):
     """A splint work basket on the floor by the chair, its bail handle up,
     a skein of undyed yarn and a ball of indigo in it, needles stuck through."""
     cx = x + w / 2
-    b0, b1 = y + 14, y + h - 1.0
+    b0, b1 = y + 10, y + h - 0.8
     room.ellipse(cx - 6.4, b1 - 2.2, cx + 6.4, b1 + 0.6, ramp(C.STRAW, 0.2))
     room.poly([(cx - 6.6, b0 + 1.0), (cx + 6.6, b0 + 1.0), (cx + 5.6, b1), (cx - 5.6, b1)], ramp(C.STRAW, 0.5))
-    for k in range(6):
+    for k in range(int((b1 - b0 - 2.4) / 1.6)):
         yy = b0 + 2.0 + k * 1.6
         room.rect(cx - 6.4 + k * 0.17, yy, cx + 6.4 - k * 0.17, yy + 0.5, ramp(C.STRAW, 0.28))
     for k in range(7):
@@ -577,16 +580,19 @@ def work_basket(room, x, y, w, h, rnd):
     room.line([(cx - 5.0, y + 1.8), (cx + 5.0, y + 1.8)], ramp(C.STRAW, 0.85), 0.3)
 
 
-def common_pieces(seed=1693):
-    w, h = 128, 112
+def pieces_sheet(key, seed, outline=0.35, ring=0.18):
+    """The room's pieces sheet, each piece painted into its declared rect
+    (ROOMS) by C.paint_pieces, which refuses art outside a rect and rects
+    that overlap."""
     rnd = random.Random(seed)
-    room = C.Room(w, h)
-    keeper_desk(room, 20, 54, 48, 36, rnd)
-    joined_table(room, 74, 74, 48, 32, rnd)
-    form(room, 74, 98, 48, 16, rnd)
-    great_chair(room, 0, 78, 32, 32, rnd)
-    work_basket(room, 26, 86, 16, 26, rnd)
-    return C.shrink(room, PIECE_PALETTE, outline=0.45, ring=0.26)
+    spec = ROOMS[key]
+    return C.paint_pieces(*spec["size"], [((x, y, w, h), (lambda room, px, py, pw, ph, p=painter: p(room, px, py, pw, ph, rnd)))
+                                         for (x, y, w, h, _sort), painter in spec["pieces"]],
+                          PIECE_PALETTE, outline=outline, ring=ring)
+
+
+def common_pieces():
+    return pieces_sheet(INN_KEY, 1693, outline=0.45, ring=0.26)
 
 
 def inn_fire():
@@ -822,17 +828,12 @@ def banister(room, x, y, w, h, rnd):
         room.rect(px, top, px + 3.2, foot + 1, ramp(C.OAK, 0.5))
         room.rect(px, top, px + 1.0, foot + 1, ramp(C.OAK, 0.7))
         room.rect(px + 2.4, top, px + 3.2, foot + 1, ramp(C.OAK, 0.26))
-        room.rect(px - 0.3, top, px + 3.5, top + 1.0, ramp(C.OAK, 0.8))
+        room.rect(px, top, px + 3.2, top + 1.0, ramp(C.OAK, 0.8))
         room.rect(px, top + 4.0, px + 3.2, top + 4.6, ramp(C.OAK, 0.3))
 
 
-def hall_pieces(seed=802):
-    w, h = 256, 128
-    rnd = random.Random(seed)
-    room = C.Room(w, h)
-    banister(room, 0, 63, 115, 19, rnd)
-    banister(room, 141, 63, 115, 19, rnd)
-    return C.shrink(room, PIECE_PALETTE, outline=0.3, ring=0.12)
+def hall_pieces():
+    return pieces_sheet("inn_hall", 802, outline=0.3, ring=0.12)
 
 
 def hall_door_open(seed=803):
@@ -951,7 +952,7 @@ def candle_stand(room, x, y, w, h, rnd):
     room.ellipse(x + w / 2 - 0.9, top1 + 2.2, x + w / 2 + 0.9, top1 + 4.2, ramp(BRASS, 0.45))
     room.rect(x, top0, x + w, top1, ramp(C.OAK, 0.76))
     room.rect(x, top0, x + w, top0 + 0.6, ramp(C.OAK, 0.98))
-    room.rect(x - 0.3, top1 - 0.8, x + w + 0.3, top1 + 0.2, ramp(C.OAK, 0.3))
+    room.rect(x, top1 - 0.8, x + w, top1 + 0.2, ramp(C.OAK, 0.3))
     # A little book, and the candlestick with its candle.
     room.rect(x + 1.6, top0 + 1.6, x + 6.6, top0 + 4.6, ramp(LEATHER, 0.3))
     room.rect(x + 1.6, top0 + 3.8, x + 6.6, top0 + 4.6, ramp(C.LINEN, 0.75))
@@ -969,7 +970,7 @@ def chest_of_drawers(room, x, y, w, h, rnd):
     """A tall chest of drawers in the corner, seen from the front: a pewter
     basin and ewer on its top; a moulded cornice; four graduated drawers
     with brass drops; a base moulding on turned feet."""
-    top = y + 8
+    top = y + 9
     # The ewer and basin.
     room.ellipse(x + 1.4, top - 2.6, x + 11.2, top + 0.8, ramp(C.PEWTER, 0.5))
     room.ellipse(x + 2.2, top - 2.4, x + 10.4, top - 0.6, ramp(C.PEWTER, 0.3))
@@ -1028,7 +1029,7 @@ def trunk(room, x, y, w, h, rnd):
     room.rect(cx - 2.0, lid + 0.8, cx - 1.2, lid + 5.0, ramp(BRASS, 0.62))
     room.rect(cx - 0.3, lid + 2.2, cx + 0.4, lid + 3.4, ramp(C.SOOT, 0.2))
     room.rect(cx - 0.8, lid - 2.4, cx + 0.8, lid + 1.6, ramp(C.IRON, 0.45))
-    room.line([(x + w - 0.8, lid + 1.6), (x + w + 0.0, lid + 3.6), (x + w - 0.8, lid + 5.4)], ramp(LEATHER, 0.3), 0.6)
+    room.line([(x + w - 1.4, lid + 1.6), (x + w - 0.7, lid + 3.6), (x + w - 1.4, lid + 5.4)], ramp(LEATHER, 0.3), 0.6)
 
 
 def weave(room, x0, y0, x1, y1, rnd):
@@ -1052,17 +1053,14 @@ def weave(room, x0, y0, x1, y1, rnd):
         room.rect(sx, sy, sx + rnd.uniform(0.8, 2.2), sy + 0.25, ramp(FADED, rnd.choice((0.3, 0.52, 0.62))))
 
 
-def guest_pieces(seed=848):
-    w, h = 112, 128
-    rnd = random.Random(seed)
-    room = C.Room(w, h)
-    C.rope_bed(room, 16, 44, 32, 44, FADED, rnd, "check")
-    weave(room, 17.6, 56, 46.4, 75.5, rnd)
-    trunk(room, 16, 102, 32, 16, rnd)
-    candle_stand(room, 48, 32, 16, 36, rnd)
-    chest_of_drawers(room, 96, 24, 16, 48, rnd)
-    C.ladder_chair(room, 81, 80, 14, 27, back_left=False)
-    return C.shrink(room, PIECE_PALETTE, outline=0.35, ring=0.18)
+def guest_bed(room, x, y, w, h, rnd):
+    """The guest bed under its faded check coverlet, the check woven down."""
+    C.rope_bed(room, x, y, w, h, FADED, rnd, "check")
+    weave(room, x + 1.6, y + 12, x + w - 1.6, y + h - 12.5, rnd)
+
+
+def guest_pieces():
+    return pieces_sheet("inn_guest", 848)
 
 
 # ---------------------------------------------------------------- sheets and checks
@@ -1079,12 +1077,64 @@ SHEETS = {
     "inn_guest_common": guest_room,
     "inn_guest_pieces": guest_pieces,
 }
-# The interior_rooms.gd entries this module paints, by key: the room sheet,
-# the pieces sheet, and the open door's sheet for a hall.
+FIRE = "res://assets/interiors/inn_fire.png"
+POT = "res://assets/interiors/inn_pot.png"
+CANDLE = "res://assets/interiors/inn_candle.png"
+
+
+def _ladder_chair(back_left):
+    return lambda room, x, y, w, h, rnd: C.ladder_chair(room, x, y, w, h, back_left=back_left)
+
+
+# Each room's geometry, declared once: the painters draw from it and --check
+# requires its interior_rooms.gd entry to say exactly the same. pieces are
+# ((x, y, w, h, sort_y), painter), the rects and sort lines the engine's
+# floor plans were laid out against, disjoint because the client cuts each
+# sprite from its own pixels; anims (sheet, frames, x, y, sort_y or None);
+# bar/reach where a sale is set on the desk and where the keeper steps to
+# set it there.
 ROOMS = {
-    INN_KEY: ("inn_common", "inn_pieces", None),
-    "inn_hall": ("inn_hall_common", "inn_hall_pieces", "inn_hall_door_open"),
-    "inn_guest": ("inn_guest_common", "inn_guest_pieces", None),
+    INN_KEY: {
+        "sheets": ("inn_common", "inn_pieces"),
+        "size": (128, 112),
+        "bar": (50, 70),
+        "reach": (48, 66),
+        "pieces": [
+            ((20, 54, 48, 36, 89), keeper_desk),
+            # The table stops where the form begins (the pack's rects
+            # overlapped by 8 px).
+            ((74, 74, 48, 24, 104), joined_table),
+            ((74, 98, 48, 16, 109), form),
+            # The great chair stops where the desk begins and the basket
+            # starts below the desk (the pack's chair and basket overlapped
+            # the desk and each other).
+            ((0, 78, 20, 32, 101), great_chair),
+            ((26, 90, 16, 22, 111), work_basket),
+        ],
+        "covers": {},
+        "anims": [(FIRE, 4, 96, 38, None), (POT, 4, 66, 50, 81), (CANDLE, 4, 24, 44, 90)],
+    },
+    "inn_hall": {
+        "sheets": ("inn_hall_common", "inn_hall_pieces"),
+        "door_open": "inn_hall_door_open",
+        "size": (256, 128),
+        "pieces": [((0, 63, 115, 19, 80), banister), ((141, 63, 115, 19, 80), banister)],
+        "covers": {},
+        "anims": [],
+    },
+    "inn_guest": {
+        "sheets": ("inn_guest_common", "inn_guest_pieces"),
+        "size": (112, 128),
+        "pieces": [
+            ((16, 44, 32, 44, 71), guest_bed),
+            ((16, 102, 32, 16, 117), trunk),
+            ((48, 32, 16, 36, 67), candle_stand),
+            ((96, 24, 16, 48, 71), chest_of_drawers),
+            ((81, 80, 14, 27, 101), _ladder_chair(False)),
+        ],
+        "covers": {"bed": (16, 56, 32, 32)},
+        "anims": [],
+    },
 }
 # Art px: the rooms at twice their room px; each anim strip its frames of
 # the frame's room px at twice; the open door 32 x 32 room px at twice.
@@ -1101,25 +1151,33 @@ FRAMES = {"inn_fire": (16, 16), "inn_pot": (32, 32), "inn_candle": (16, 32)}
 DOOR_OPEN_PX = (32, 32)
 
 
-def entry_field(key, field):
-    """A plain string field of the room's entry in interior_rooms.gd."""
-    text = open(C.ROOMS_GD, encoding="utf-8").read()
-    m = re.search(r'\n    "%s": \{(.*?)\n    \},' % re.escape(key), text, re.S)
-    f = re.search(r'"%s": "([^"]+)"' % field, m.group(1)) if m else None
-    return f.group(1) if f else None
+def entry_extras(key, path=C.ROOMS_GD):
+    """What C.room_entry does not read from the room's entry: bar, reach,
+    door_open, and each anim's sort line (None for a wall anim)."""
+    text = open(path, encoding="utf-8").read()
+    body = re.search(r'\n    "%s": \{(.*?)\n    \},' % re.escape(key), text, re.S).group(1)
+
+    def point(field):
+        m = re.search(r'"%s": \{"x": (-?\d+), "y": (-?\d+)\}' % field, body)
+        return (int(m.group(1)), int(m.group(2))) if m else None
+
+    door = re.search(r'"door_open": "([^"]+)"', body)
+    sorts = [int(v) if v else None for v in re.findall(r'\{"sheet": "[^"]+", [^}]*?(?:"sort_y": (\d+))?\}', body)]
+    return {"bar": point("bar"), "reach": point("reach"), "door_open": door.group(1) if door else None, "anim_sorts": sorts}
 
 
 def check(out_dir):
-    """Each sheet is exactly what this script paints now and of its size; the
-    room entries point at these sheets (the open door too) at this density;
-    every piece's rect holds art; every cover rect lies inside its bed's
-    piece and holds the coverlet; every anim is a res:// strip of this
-    module's, of the entry's frame count and frame size."""
+    """Each sheet is exactly what this script paints now and of its size;
+    each room's entry in interior_rooms.gd names these sheets at this
+    density and says exactly what ROOMS declares: size, pieces (rects and
+    sort lines, in order), covers, anims (sheet, frames, position, sort
+    line), bar, reach and door_open; every cover rect lies inside its bed's
+    piece and holds the coverlet; every anim strip is whole frames of its
+    declared size."""
     ok = True
     sheets = {}
     for name, build in SHEETS.items():
-        path = os.path.join(out_dir, name + ".png")
-        sheet = Image.open(path).convert("RGBA")
+        sheet = Image.open(os.path.join(out_dir, name + ".png")).convert("RGBA")
         fresh = build()
         if sheet.size != fresh.size or sheet.tobytes() != fresh.tobytes():
             print("%s: the saved sheet differs from a fresh paint (rerun inn.py)" % name)
@@ -1128,49 +1186,47 @@ def check(out_dir):
             print("%s: %dx%d, not %dx%d" % ((name,) + sheet.size + SIZES[name]))
             ok = False
         sheets[name] = sheet
-    for key, (common, pieces, door_open) in ROOMS.items():
+    d = C.DENSITY
+    res = "res://assets/interiors/%s.png"
+    for key, spec in ROOMS.items():
         entry = C.room_entry(key)
-        want = {"sheet": "res://assets/interiors/%s.png" % common, "pieces_sheet": "res://assets/interiors/%s.png" % pieces}
-        if entry["sheets"] != want:
-            print("%s: interior_rooms.gd sheets are %s, not %s" % (key, entry["sheets"], want))
-            ok = False
-        d = entry["density"]
-        if d != C.DENSITY:
-            print("%s: the entry's density %d is not the painted %d" % (key, d, C.DENSITY))
-            ok = False
-        for name in (common, pieces):
-            if sheets[name].size != (entry["size"][0] * d, entry["size"][1] * d):
-                print("%s: %s is %s, not the entry's size %s at density %d" % (key, name, sheets[name].size, entry["size"], d))
+        extra = entry_extras(key)
+        common, pieces = spec["sheets"]
+        door = spec.get("door_open")
+        for label, got, expect in (
+                ("sheets", entry["sheets"], {"sheet": res % common, "pieces_sheet": res % pieces}),
+                ("density", entry["density"], d),
+                ("size", entry["size"], spec["size"]),
+                ("pieces", entry["pieces"], [r for r, _p in spec["pieces"]]),
+                ("covers", entry["covers"], spec["covers"]),
+                ("anims", entry["anims"], [a[:4] for a in spec["anims"]]),
+                ("anim sort lines", extra["anim_sorts"], [a[4] for a in spec["anims"]]),
+                ("bar", extra["bar"], spec.get("bar")),
+                ("reach", extra["reach"], spec.get("reach")),
+                ("door_open", extra["door_open"], res % door if door else None)):
+            if got != expect:
+                print("%s: interior_rooms.gd %s are %s, the painted %s" % (key, label, got, expect))
                 ok = False
-        have_door = entry_field(key, "door_open")
-        want_door = "res://assets/interiors/%s.png" % door_open if door_open else None
-        if have_door != want_door:
-            print("%s: door_open is %s, not %s" % (key, have_door, want_door))
-            ok = False
-        if door_open and sheets[door_open].size != (DOOR_OPEN_PX[0] * d, DOOR_OPEN_PX[1] * d):
-            print("%s: %s is not %s room px at density %d" % (key, door_open, DOOR_OPEN_PX, d))
+        for name in (common, pieces):
+            if sheets[name].size != (spec["size"][0] * d, spec["size"][1] * d):
+                print("%s: %s is %s, not the room's size at density %d" % (key, name, sheets[name].size, d))
+                ok = False
+        if door and sheets[door].size != (DOOR_OPEN_PX[0] * d, DOOR_OPEN_PX[1] * d):
+            print("%s: %s is not %s room px at density %d" % (key, door, DOOR_OPEN_PX, d))
             ok = False
         alpha = sheets[pieces].split()[3]
-        for x, y, w, h, _sort in entry["pieces"]:
-            box = alpha.crop((x * d, y * d, (x + w) * d, (y + h) * d)).getbbox()
-            if box is None:
-                print("%s: no art in the piece rect %s" % (key, (x, y, w, h)))
-                ok = False
-        for bed, (x, y, w, h) in entry["covers"].items():
-            inside = any(px <= x and py <= y and x + w <= px + pw and y + h <= py + ph for px, py, pw, ph, _ in entry["pieces"])
+        for bed, (x, y, w, h) in spec["covers"].items():
+            inside = any(px <= x and py <= y and x + w <= px + pw and y + h <= py + ph
+                         for (px, py, pw, ph, _s), _p in spec["pieces"])
             filled = alpha.crop(((x + 4) * d, (y + 2) * d, (x + w - 4) * d, (y + h - 8) * d)).getextrema()[0] == 255
             if not inside or not filled:
                 print("%s: cover %s %s is not a covered part of a bed piece" % (key, bed, (x, y, w, h)))
                 ok = False
-        for sheet, frames, _x, _y in entry["anims"]:
-            name = os.path.splitext(os.path.basename(sheet))[0]
-            if sheet != "res://assets/interiors/%s.png" % name or name not in FRAMES:
-                print("%s: anim %s is not one of this module's strips" % (key, sheet))
-                ok = False
-                continue
+        for path, frames, _x, _y, _sort in spec["anims"]:
+            name = os.path.splitext(os.path.basename(path))[0]
             fw, fh = FRAMES[name]
-            if sheets[name].size != (frames * fw * d, fh * d):
-                print("%s: anim %s is not %d frames of %dx%d room px at density %d" % (key, name, frames, fw, fh, d))
+            if path != res % name or sheets[name].size != (frames * fw * d, fh * d):
+                print("%s: anim %s is not %d frames of %dx%d room px painted here" % (key, path, frames, fw, fh))
                 ok = False
     return ok
 
