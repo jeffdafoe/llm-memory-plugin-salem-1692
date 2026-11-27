@@ -1169,13 +1169,37 @@ def entry_extras(key, path=C.ROOMS_GD):
 
     door = re.search(r'"door_open": "([^"]+)"', body)
     anims = []
-    block = re.search(r'"anims": \[(.*?)\]', body, re.S)
+    block = re.search(r'"anims"\s*:\s*\[(.*?)\]', body, re.S)
     for record in re.findall(r'\{([^{}]*)\}', block.group(1) if block else ""):
-        fields = {k: v.strip('"') for k, v in re.findall(r'"(\w+)": ("[^"]*"|-?[\d.]+)', record)}
-        num = (lambda f, cast: cast(fields[f]) if f in fields else None)
-        anims.append((fields.get("sheet"), num("frames", int), num("fps", float), num("x", int), num("y", int),
-                      num("sort_y", int)))
+        fields = anim_fields(record)
+        anims.append(tuple(fields.get(f) for f in ("sheet", "frames", "fps", "x", "y", "sort_y")))
     return {"bar": point("bar"), "reach": point("reach"), "door_open": door.group(1) if door else None, "anims": anims}
+
+
+# A whole GDScript number literal: digits, an optional fraction and exponent.
+NUMBER = re.compile(r'-?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?')
+
+
+def anim_fields(record):
+    """One anim dictionary's fields by key. Every field must be "key": value
+    with the value a whole quoted string or a whole number (as Godot would
+    read it: 6.0e1 is 60.0), else ValueError: a value the check cannot read
+    must not pass as absent."""
+    fields = {}
+    for item in record.split(","):
+        if not item.strip():
+            continue
+        m = re.fullmatch(r'\s*"(\w+)"\s*:\s*(.*?)\s*', item, re.S)
+        if not m:
+            raise ValueError("anim field %r is not \"key\": value" % item.strip())
+        key, value = m.groups()
+        if re.fullmatch(r'"[^"]*"', value):
+            fields[key] = value[1:-1]
+        elif NUMBER.fullmatch(value):
+            fields[key] = float(value)
+        else:
+            raise ValueError("anim field %s has a value the check cannot read: %r" % (key, value))
+    return fields
 
 
 def check(out_dir):
@@ -1202,7 +1226,12 @@ def check(out_dir):
     res = "res://assets/interiors/%s.png"
     for key, spec in ROOMS.items():
         entry = C.room_entry(key)
-        extra = entry_extras(key)
+        try:
+            extra = entry_extras(key)
+        except ValueError as e:
+            print("%s: %s" % (key, e))
+            ok = False
+            continue
         common, pieces = spec["sheets"]
         door = spec.get("door_open")
         for label, got, expect in (
@@ -1213,7 +1242,8 @@ def check(out_dir):
                 ("covers", entry["covers"], spec["covers"]),
                 # Every anim field by its key, so a record's field order does
                 # not matter (C.room_entry's anims depend on it).
-                ("anims", extra["anims"], spec["anims"]),
+                ("anims", extra["anims"], [tuple(None if v is None else (v if isinstance(v, str) else float(v)) for v in a)
+                                           for a in spec["anims"]]),
                 ("bar", extra["bar"], spec.get("bar")),
                 ("reach", extra["reach"], spec.get("reach")),
                 ("door_open", extra["door_open"], res % door if door else None)):
