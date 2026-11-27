@@ -209,6 +209,9 @@ const WAGONS := {
     # migrations/LLM-968n-painted-signs_up.sql (tools/tree-art/signs.py).
     "res://assets/trees/sign-post.png": Vector2i(192, 128),
     "res://assets/trees/sign-board.png": Vector2i(32, 32),
+    # migrations/LLM-968o-painted-wood_up.sql (tools/tree-art/wood.py).
+    "res://assets/trees/wood-pile.png": Vector2i(64, 64),
+    "res://assets/trees/wood-shelter.png": Vector2i(64, 64),
 }
 
 var _failures := 0
