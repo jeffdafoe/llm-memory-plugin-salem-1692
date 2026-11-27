@@ -237,12 +237,12 @@ LAYOUT = {"wood-pile": (PILE_ID, "default", paint_wood_pile),
 SHEETS = {name: (lambda paint=paint: paint()) for name, (_, _, paint) in LAYOUT.items()}
 FRAMES = {name: (FRAME[0] * DENSITY, FRAME[1] * DENSITY) for name in LAYOUT}
 MIGRATION = os.path.join(B.ROOT, "migrations", "LLM-968o-painted-wood_up.sql")
-STATE_ROW = re.compile(r"\('([0-9a-f-]{36})', '([^']+)', '([^']+)', (\d+), (\d+), (\d+), (\d+), \d+, [\d.]+\)")
+STATE_ROW = re.compile(r"\('([0-9a-f-]{36})', '([^']+)', '([^']+)', (\d+), (\d+), (\d+), (\d+), (\d+), ([\d.]+)\)")
 
 
 def migration_states(path=MIGRATION):
     """The migration's llm968o_state rows, as ({(asset id, state): (sheet,
-    src_x, src_y, src_w, src_h)}, problems). Every row of the VALUES block
+    src_x, src_y, src_w, src_h, frame_count, frame_rate)}, problems). Every row of the VALUES block
     must parse (comments and the commas between rows aside), and no
     (asset, state) may appear twice."""
     text = open(path, encoding="utf-8").read()
@@ -255,7 +255,8 @@ def migration_states(path=MIGRATION):
         key = (r.group(1), r.group(2))
         if key in rows:
             problems.append("migration state %s %s is written twice" % key)
-        rows[key] = (r.group(3), int(r.group(4)), int(r.group(5)), int(r.group(6)), int(r.group(7)))
+        rows[key] = (r.group(3), int(r.group(4)), int(r.group(5)), int(r.group(6)), int(r.group(7)),
+                     int(r.group(8)), float(r.group(9)))
     left = STATE_ROW.sub("", body).replace(",", "").split()
     if left:
         problems.append("migration llm968o_state has text that is not a state row: %s" % " ".join(left)[:80])
@@ -264,9 +265,10 @@ def migration_states(path=MIGRATION):
 
 def migration_problems(path=MIGRATION):
     """The migration must point each asset's state at its sheet's one frame,
-    and write no other state."""
+    still (frame_count 1, frame_rate 0), and write no other state."""
     rows, out = migration_states(path)
-    want = {(asset_id, state): ("res://assets/trees/%s.png" % name, 0, 0) + FRAMES[name]
+    # One still frame each: frame_count 1, frame_rate 0.
+    want = {(asset_id, state): ("res://assets/trees/%s.png" % name, 0, 0) + FRAMES[name] + (1, 0.0)
             for name, (asset_id, state, _) in LAYOUT.items()}
     for key in sorted(set(want) | set(rows)):
         if rows.get(key) != want.get(key):
