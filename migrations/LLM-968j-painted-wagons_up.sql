@@ -24,13 +24,20 @@
 --   and not an obstacle, as before.
 --   Each has one state, default, one frame.
 --
--- PLACEMENTS: the one Covered Wagon, by id, on its anchor tile (28, 5),
--- moves to that tile's centre (at most half a tile, the anchor tile and so
--- every tile rule unchanged). Its new footprint lies inside its old one, so
--- no tile becomes blocked. Any other placement of the Wagon or the Covered
--- Wagon makes the migration refuse: the Wagon's new footprint reaches a row
--- below its anchor that its old one did not, and only this placement was
--- checked. Cart placements (none live) are not moved: no footprint.
+-- PLACEMENTS: the one Covered Wagon, by id, on its anchor tile (28, 5), a
+-- bare object (not attached, no structure), moves to that tile's centre (at
+-- most half a tile, the anchor tile and so every tile rule unchanged). No
+-- tile becomes blocked: its old walk-grid tiles were the 5 x 6 footprint less
+-- the door tile (-2, -2) (on the footprint's west edge, so no corridor); the
+-- new ones are the 5 x 3 box, all inside the old blocked tiles, and the old
+-- door tile is now outside the footprint (engine/sim/
+-- painted_wagon_walkgrid_test.go builds both grids). Any other placement of
+-- the Wagon or the Covered Wagon, or the known one attached, promoted to a
+-- structure, moved off its tile or onto another asset, makes the migration
+-- refuse: the Wagon's new footprint reaches a row below its anchor that its
+-- old one did not, and only this placement was checked. So after a rollback
+-- that keeps a wagon placed in between, the next up refuses until it is
+-- removed. Cart placements (none live) are not moved: no footprint.
 --
 -- Each asset that exists is set, then checked exactly (columns, states both
 -- ways, no tags, no lights, no slots) along with the placement; any
@@ -40,7 +47,8 @@
 
 BEGIN;
 
-LOCK TABLE asset, asset_state, asset_state_tag, asset_state_light, asset_slot, village_object IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE asset, asset_state, asset_state_tag, asset_state_light, asset_slot, village_object, structure
+    IN SHARE ROW EXCLUSIVE MODE;
 
 DO $$
 DECLARE
@@ -69,7 +77,9 @@ BEGIN
     DELETE FROM llm968j_place p WHERE NOT EXISTS (SELECT 1 FROM llm968j_asset v WHERE v.asset_id = p.asset_id);
 
     -- Refuse before writing anything: a Wagon or Covered Wagon placement that
-    -- is not the known one on its tile, or the known one now on another asset.
+    -- is not the known one on its tile, the known one now on another asset,
+    -- or the known one no longer a bare object (attached to something, or
+    -- promoted to a structure: a structure shares its placement's id).
     SELECT count(*) INTO bad FROM village_object o
      WHERE o.asset_id IN (SELECT asset_id FROM llm968j_asset WHERE is_obstacle)
        AND NOT EXISTS (SELECT 1 FROM llm968j_place p
@@ -82,6 +92,11 @@ BEGIN
      WHERE o.asset_id IS DISTINCT FROM p.asset_id;
     IF bad > 0 THEN
         RAISE EXCEPTION 'LLM-968j: the checked covered wagon is now on another asset';
+    END IF;
+    SELECT count(*) INTO bad FROM village_object o JOIN llm968j_place p ON p.id = o.id
+     WHERE o.attached_to IS NOT NULL OR EXISTS (SELECT 1 FROM structure st WHERE st.id = o.id::text);
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'LLM-968j: the checked covered wagon is attached or a structure, not a bare object';
     END IF;
 
     UPDATE asset a

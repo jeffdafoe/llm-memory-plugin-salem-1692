@@ -86,10 +86,16 @@ BEGIN
                         WHERE o.id <> t.id AND o.attached_to IS NULL
                           AND strip.tx BETWEEN floor(o.x / 32)::int - f.fp[1] AND floor(o.x / 32)::int + f.fp[2]
                           AND strip.ty BETWEEN floor(o.y / 32)::int - f.fp[3] AND floor(o.y / 32)::int + f.fp[4])
+            -- The byte is read only inside the CASE, after the bounds and
+            -- the data's length pass: SQL does not promise to evaluate AND or
+            -- OR terms in order, and get_byte off the end raises an error
+            -- instead of this refusal.
             OR EXISTS (SELECT 1 FROM village_terrain vt
-                        WHERE vt.id = 1 AND strip.tx + 60 BETWEEN 0 AND 199 AND strip.ty + 112 BETWEEN 0 AND 179
-                          AND octet_length(vt.data) >= 200 * 180
-                          AND get_byte(vt.data, (strip.ty + 112) * 200 + (strip.tx + 60)) IN (5, 6)));
+                        WHERE vt.id = 1
+                          AND CASE WHEN strip.tx + 60 BETWEEN 0 AND 199 AND strip.ty + 112 BETWEEN 0 AND 179
+                                        AND octet_length(vt.data) >= 200 * 180
+                                   THEN get_byte(vt.data, (strip.ty + 112) * 200 + (strip.tx + 60)) IN (5, 6)
+                                   ELSE false END));
     IF bad > 0 THEN
         RAISE EXCEPTION 'LLM-968j down: % tile(s) the old wagon footprints would take back are not clear; move those wagons first', bad;
     END IF;

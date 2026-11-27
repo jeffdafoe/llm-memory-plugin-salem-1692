@@ -32,6 +32,7 @@ import argparse
 import math
 import os
 import random
+import re
 import sys
 
 from PIL import Image, ImageDraw
@@ -343,19 +344,48 @@ MIGRATION = os.path.join(B.ROOT, "migrations", "LLM-968j-painted-wagons_up.sql")
 WAGON_FOOTPRINT = (2, 2, 1, 1)
 
 
+# Each asset the migration writes: its id, sheet, frame on that sheet, anchor
+# and frame (pack px), footprint and whether it is an obstacle.
+ASSETS = (
+    ("Wagon", "7e10da69-cdc2-4c48-9b9b-b4ad10dc839c", "wagons", 0, WAGON_ANCHOR, WAGON_FRAME, WAGON_FOOTPRINT, True),
+    ("Covered Wagon", "3500f9ce-59be-45c1-9917-50bf0e232f4e", "wagons", 1, WAGON_ANCHOR, WAGON_FRAME, WAGON_FOOTPRINT,
+     True),
+    ("Cart", "11483134-ab6c-4fe3-9b41-83bb29663d80", "cart", 0, CART_ANCHOR, CART_FRAME, (0, 0, 0, 0), False),
+)
+
+
+def migration_rows(text):
+    """The migration's llm968j_asset rows, by asset id, each with its
+    comments dropped and its whitespace collapsed."""
+    m = re.search(r"INSERT INTO llm968j_asset VALUES(.*?);", text, re.S)
+    if not m:
+        return {}
+    body = re.sub(r"--[^\n]*", "", m.group(1))
+    body = " ".join(body.split())
+    return {r.group(1): r.group(0) for r in re.finditer(r"\('([0-9a-f-]{36})'[^)]*\)", body)}
+
+
+def expected_row(asset_id, sheet, frame, anchor, frame_size, footprint, obstacle):
+    fw, fh, _ = FRAMES[sheet]
+    return ("('%s', 'res://assets/trees/%s.png', %d, %d, %d, %.1f::double precision / %d, %.1f::double precision / %d, "
+            "%d, %d, %d, %d, %s)" % (asset_id, sheet, frame * fw, fw, fh, anchor[0], frame_size[0], anchor[1],
+                                      frame_size[1], *footprint, "true" if obstacle else "false"))
+
+
 def migration_problems(path=MIGRATION):
-    """The migration's anchors and footprint must be this script's: each
-    anchor as the fraction it writes, and the wagon box's ground (its four
-    corners, out to the wheels) inside the footprint with the anchor at its
-    tile's centre, where the migration puts the placed covered wagon."""
-    text = open(path, encoding="utf-8").read()
+    """The migration must write, for each asset by its id, this script's sheet,
+    frame rect, anchor fraction, footprint and obstacle flag; and the wagon
+    box's ground (its four corners, out to the wheels) must lie inside the
+    footprint with the anchor at its tile's centre, where the migration puts
+    the placed covered wagon."""
+    rows = migration_rows(open(path, encoding="utf-8").read())
     out = []
-    for name, (ax, ay), (fw, fh) in (("wagon", WAGON_ANCHOR, WAGON_FRAME), ("cart", CART_ANCHOR, CART_FRAME)):
-        frac = "%.1f::double precision / %d, %.1f::double precision / %d" % (ax, fw, ay, fh)
-        if frac not in text:
-            out.append("%s: the migration does not write the anchor %s" % (name, frac))
-    if "2, 2, 1, 1, true)" not in text:
-        out.append("wagon: the migration's footprint is not %s" % (WAGON_FOOTPRINT,))
+    if len(rows) != len(ASSETS):
+        out.append("the migration writes %d asset rows, not %d" % (len(rows), len(ASSETS)))
+    for name, asset_id, sheet, frame, anchor, frame_size, footprint, obstacle in ASSETS:
+        want = expected_row(asset_id, sheet, frame, anchor, frame_size, footprint, obstacle)
+        if rows.get(asset_id) != want:
+            out.append("%s: the migration writes %s, not %s" % (name, rows.get(asset_id), want))
     box = Box(WAGON_ANCHOR, *WAGON_BOX)
     ground = [box.p(u, v) for u in (0, box.L) for v in (-1.4, box.Wd + 1.2)]
     fl, fr, ft, fb = WAGON_FOOTPRINT
