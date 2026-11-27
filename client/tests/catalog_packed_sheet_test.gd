@@ -215,6 +215,8 @@ const WAGONS := {
     # migrations/LLM-968q-painted-debris_up.sql (tools/tree-art/debris.py):
     # worn and storm, two 128x80 frames.
     "res://assets/trees/debris-heap.png": Vector2i(256, 80),
+    # migrations/LLM-968p-painted-outhouse_up.sql (tools/tree-art/outhouse.py).
+    "res://assets/trees/outhouse.png": Vector2i(64, 128),
 }
 
 var _failures := 0
