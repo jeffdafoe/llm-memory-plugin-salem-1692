@@ -979,6 +979,24 @@ def selftest():
             C.set_density(saved)
 
     refused("a heaped good with a stroke off its cell", lambda: run(G.on_crate(stray)))
+
+    # paint_cell guards the grown, outlined cell too: a cell that fits as
+    # painted, grown further than it fits (as a wrong grow_factor would),
+    # must be refused by the final check, not cropped.
+    def wide(r, rnd):
+        r.rect(1.5, 24, 14.5, 31, col)
+
+    def grown_too_far():
+        saved, saved_d = G.grow_factor, C.DENSITY
+        G.grow_factor = lambda *a: 1.5
+        C.set_density(G.DENSITY)
+        try:
+            G.paint_cell(wide, 1, "selftest grown")
+        finally:
+            G.grow_factor = saved
+            C.set_density(saved_d)
+
+    refused("a cell grown past its edge", grown_too_far)
     refused("a stacked dish with a stroke off its cell", lambda: run(G.stack(stray)))
     try:
         run(G.on_crate(fits))
@@ -1133,7 +1151,7 @@ def preview(out_path, sheet_dir, pack_dir=None, villager=None, zoom=2):
         im.paste(back)
     rows.append((old, new))
     width = max((o.width + 8 if o else 0) + n.width for o, n in rows)
-    height = sum(n.height + 8 for _o, n in rows)
+    height = sum(max(o.height if o else 0, n.height) + 8 for o, n in rows)
     sheet = Image.new("RGBA", (width, height), (0, 0, 0, 255))
     y = 0
     for old, new in rows:
@@ -1142,7 +1160,7 @@ def preview(out_path, sheet_dir, pack_dir=None, villager=None, zoom=2):
             sheet.paste(old, (0, y))
             x = old.width + 8
         sheet.paste(new, (x, y))
-        y += new.height + 8
+        y += max(old.height if old else 0, new.height) + 8
     sheet = sheet.resize((sheet.width * zoom, sheet.height * zoom), Image.NEAREST)
     sheet.save(out_path)
     print(out_path, sheet.size)
