@@ -110,6 +110,9 @@ const TESTS := [
     "_test_tavern_upstairs",
     "_test_tent_bedroll_tap",
     "_test_sleep_tint",
+    "_test_packed_room_art",
+    "_test_painted_room_density",
+    "_test_packed_room_sheets",
 ]
 
 const STALL := "stall-1"
@@ -4512,4 +4515,147 @@ func _test_sleep_tint() -> void:
 
     main.free()
     _clear_people()
+    _done()
+
+
+## LLM-969: room art packed into the client. A res:// sheet under
+## res://assets/ loads at once and is never fetched; any other res:// path (a
+## script, one climbing out of assets/, a missing PNG) is refused, cached as
+## null so it is not tried again, and never fetched either. A /tilesets/ path
+## is still fetched.
+func _test_packed_room_art() -> void:
+    var t_hook: Callable = _panel.texture_hook
+    var asked := []
+    _panel.texture_hook = Callable()
+    _panel.fetch_hook = func(path: String) -> void:
+        asked.append(path)
+    var packed := "res://assets/trees/outhouse.png"
+    var tex: Texture2D = _panel._texture(packed)
+    _check("a packed sheet loads at once", tex != null and tex.get_width() > 0, true)
+    _check("and is cached", _panel._textures.get(packed) == tex, true)
+    for bad in ["res://scripts/catalog.gd", "res://assets/../scripts/x.png", "res://assets/trees/no-such-sheet.png"]:
+        _check("refused: " + bad, [_panel._texture(bad), _panel._textures.has(bad)], [null, true])
+    _check("nothing packed or refused was fetched", asked, [])
+    _panel._texture("/tilesets/interiors/elsewhere.png")
+    _check("a /tilesets/ sheet is still fetched", asked, ["/tilesets/interiors/elsewhere.png"])
+    for p in [packed, "res://scripts/catalog.gd", "res://assets/../scripts/x.png", "res://assets/trees/no-such-sheet.png"]:
+        _panel._textures.erase(p)
+    _panel._fetching.clear()
+    _panel.fetch_hook = Callable()
+    _panel.texture_hook = t_hook
+    _done()
+
+
+## LLM-969: a painted room is drawn at its `density` (2: its sheets have twice
+## the room's pixels). The room, its people and its floor plan stay in room
+## pixels; every sprite cut from the room's sheets — the background, each
+## piece, a sleeper's cover, an anim — is drawn at half scale, its region and
+## its offset in the sheet's pixels. A pack room (density 1) is unchanged.
+func _test_painted_room_density() -> void:
+    _clear_people()
+    _panel.close()
+    var sid: String = HOME + "home_red_tiny"
+    var art: Dictionary = InteriorRooms.ROOMS["home_red_tiny"]
+    _check("the red tiny home is painted at density 2", int(art.get("density", 1)), 2)
+    var t_hook: Callable = _panel.texture_hook
+    _panel.texture_hook = func(path: String) -> Texture2D:
+        return _blank(128, 32) if path.ends_with("home_fire.png") else _blank(224, 288)
+    var plan: Dictionary = _catalog().rooms[sid]
+    var bed := {}
+    for st in plan["stations"]:
+        if str(st.get("id", "")) == "bed_north":
+            bed = st
+    var sleeper := _person("ruth", _farmer(), sid, {"dormant": "sleeping"})
+    sleeper.set_meta("room_square", bed["square"])
+    _panel.open(sid)
+    _check("the background at half scale", _panel._background.scale, Vector2(0.5, 0.5))
+    var p: Dictionary = art["pieces"][0]
+    var piece: Sprite2D = null
+    for child in _panel._people.get_children():
+        if child.has_meta("piece") and child is Sprite2D and (child as Sprite2D).region_enabled \
+                and (child as Sprite2D).position == Vector2(int(p["x"]), int(p["sort_y"])):
+            piece = child
+    _check("a piece is drawn", piece != null, true)
+    if piece != null:
+        _check("at its room spot, half scale, its region and offset in sheet pixels",
+            [piece.position, piece.scale, piece.region_rect, piece.offset],
+            [Vector2(int(p["x"]), int(p["sort_y"])), Vector2(0.5, 0.5),
+             Rect2(int(p["x"]) * 2, int(p["y"]) * 2, int(p["w"]) * 2, int(p["h"]) * 2),
+             Vector2(0, (int(p["y"]) - int(p["sort_y"])) * 2)])
+    var held: Node2D = _panel._holder("ruth")
+    var cover: Sprite2D = held.get_node_or_null("Cover") if held != null else null
+    var c: Dictionary = art["covers"]["bed_north"]
+    _check("the sleeper's cover is cut at density 2 and drawn at half scale",
+        [cover != null, cover.region_rect if cover else Rect2(), cover.scale if cover else Vector2.ZERO,
+         cover.position if cover else Vector2.ZERO],
+        [true, Rect2(int(c["x"]) * 2, int(c["y"]) * 2, int(c["w"]) * 2, int(c["h"]) * 2), Vector2(0.5, 0.5),
+         Vector2(int(c["x"]), int(c["y"])) - (held.get_meta("home") as Vector2) if held else Vector2.ZERO])
+    var fire: Sprite2D = null
+    for child in _panel._anims.get_children():
+        if child is Sprite2D and (child as Sprite2D).hframes == 4:
+            fire = child
+    _check("the hearth fire at half scale, at its room spot",
+        [fire != null, fire.scale if fire else Vector2.ZERO, fire.position if fire else Vector2.ZERO],
+        [true, Vector2(0.5, 0.5), Vector2(12, 36)])
+    # Taps work in room pixels whatever the density: a tap on the bare table
+    # finds nobody; a tap on someone seated on a chair, at a point that is
+    # also on the chair's piece, finds them, not the furniture.
+    _panel.close()
+    var abel := _person("abel", _farmer(), sid)
+    var seat := {}
+    for st in plan["stations"]:
+        if str(st.get("id", "")) == "chair_west":
+            seat = st
+    abel.set_meta("room_square", seat["square"])
+    _panel.open(sid)
+    _panel.k = 4
+    _panel._stretch = Vector2.ONE
+    _panel._scene.position = Vector2.ZERO
+    _check("a tap on the bare table finds nothing", _panel.thing_at(_at_art(Vector2(48, 74))), {})
+    var sat: Node2D = _panel._holder("abel")
+    var tap := (sat.position + Vector2(0, -8)) if sat else Vector2.ZERO
+    var chair: Dictionary = {}
+    for pc in art["pieces"]:
+        if int(pc["x"]) == 16 and int(pc["y"]) == 68:
+            chair = pc
+    var on_chair := Rect2(int(chair["x"]), int(chair["y"]), int(chair["w"]), int(chair["h"])).has_point(tap)
+    _check("seated on the west chair, the tap point is on the chair's piece too",
+        [sat != null and sat.position == Vector2(int(seat["at"][0]), int(seat["at"][1])), on_chair], [true, true])
+    _check("a tap on someone seated over the furniture finds them", str(_panel.thing_at(_at_art(tap)).get("id", "")), "abel")
+    _panel.close()
+    _clear_people()
+    # A pack room is still drawn one to one.
+    _panel.open(_sid)
+    _check("a pack room: the background one to one", _panel._background.scale, Vector2.ONE)
+    _panel.close()
+    _panel.texture_hook = t_hook
+    _done()
+
+
+## LLM-969: every room sheet packed into the client is there, and is the
+## room's size at its density; every packed anim strip is whole frames.
+func _test_packed_room_sheets() -> void:
+    var packed := 0
+    for key in InteriorRooms.ROOMS:
+        var room: Dictionary = InteriorRooms.ROOMS[key]
+        var d := int(room.get("density", 1))
+        var size: Vector2i = room["size"]
+        for field in ["sheet", "pieces_sheet"]:
+            var path := str(room.get(field, ""))
+            if not path.begins_with("res://"):
+                continue
+            packed += 1
+            var tex := load(path) as Texture2D
+            _check("%s %s: packed" % [key, field], tex != null, true)
+            if tex != null:
+                _check("%s %s: the room's size at density %d" % [key, field, d], Vector2i(tex.get_width(), tex.get_height()), size * d)
+        for anim in room.get("anims", []):
+            var path := str(anim.get("sheet", ""))
+            if not path.begins_with("res://"):
+                continue
+            var tex := load(path) as Texture2D
+            _check("%s anim %s: packed" % [key, path], tex != null, true)
+            if tex != null:
+                _check("%s anim %s: whole frames" % [key, path], tex.get_width() % int(anim.get("frames", 1)), 0)
+    _check("at least the red tiny home is packed", packed >= 2, true)
     _done()

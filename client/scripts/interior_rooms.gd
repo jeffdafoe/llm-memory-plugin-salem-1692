@@ -12,6 +12,12 @@ class_name InteriorRooms
 ## lives in the tiles repo (tilesets/interiors/) and on the VPS beside the
 ## other tilesets.
 ##
+## The pack rooms' art lives in the tiles repo; a room painted for LLM-969
+## (tools/interior-art/) is packed into the client (res://assets/interiors/)
+## and drawn at `density` art pixels per room pixel (2: twice the detail at
+## the same size). Every rect, line and position here is in room pixels
+## whatever the density; the window scales the sheets.
+##
 ## `sheet` is the room without its furniture (walls, floor, rug). The
 ## furniture is `pieces` (LLM-767): each a rect {x, y, w, h} of `pieces_sheet`,
 ## which holds every piece where it stands in the room, drawn among the people
@@ -118,14 +124,17 @@ const ROOMS := {
             {"sheet": "/tilesets/interiors/home_fire_thatch.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
         ],
     },
+    # Painted (LLM-969): tools/interior-art/homes.py, at twice the room's
+    # pixels.
     "home_red_tiny": {
-        "sheet": "/tilesets/interiors/home_red_tiny_common.png",
-        "pieces_sheet": "/tilesets/interiors/home_red_tiny_pieces.png",
+        "sheet": "res://assets/interiors/home_red_tiny_common.png",
+        "pieces_sheet": "res://assets/interiors/home_red_tiny_pieces.png",
+        "density": 2,
         "size": Vector2i(112, 144),
         "pieces": [
             {"x": 80, "y": 44, "w": 32, "h": 44, "sort_y": 71},
             {"x": 80, "y": 98, "w": 32, "h": 44, "sort_y": 125},
-            {"x": 32, "y": 70, "w": 32, "h": 25, "sort_y": 88},
+            {"x": 32, "y": 70, "w": 29, "h": 25, "sort_y": 88},
             {"x": 16, "y": 68, "w": 14, "h": 27, "sort_y": 89},
             {"x": 61, "y": 68, "w": 14, "h": 27, "sort_y": 89},
             {"x": 0, "y": 96, "w": 16, "h": 48, "sort_y": 143},
@@ -136,7 +145,7 @@ const ROOMS := {
             "bed_south": {"x": 80, "y": 110, "w": 32, "h": 32},
         },
         "anims": [
-            {"sheet": "/tilesets/interiors/home_fire_thatch.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
+            {"sheet": "res://assets/interiors/home_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
         ],
     },
     "home_blue_tiny": {
