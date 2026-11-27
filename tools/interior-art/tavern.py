@@ -1211,6 +1211,9 @@ def piece_groups(pieces):
     split moved by a pixel (a gap or an overlap between the bar's arms) is
     refused rather than painted over. Raises ValueError."""
     rects = [r[:4] for r, _p in pieces]
+    for r in rects:
+        if r[2] <= 0 or r[3] <= 0:
+            raise ValueError("piece %s has no area" % (r,))
     for i, (ax, ay, aw, ah) in enumerate(rects):
         for bx, by, bw, bh in rects[i + 1:]:
             if ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah:
@@ -1270,16 +1273,35 @@ def _entry_body(key):
     return re.search(r'\n    "%s": \{(.*?)\n    \},' % re.escape(key), text, re.S).group(1)
 
 
+_FIELD = r'\s*"(\w+)"\s*:\s*("[^"\\]*"|-?\d+\.\d+|-?\d+)\s*'
+
+
 def _entry_anims(body):
-    """The entry's anims, each as a dict of all its fields (strings, ints,
-    floats), so a changed fps or an added sort_y shows."""
-    m = re.search(r'"anims": \[(.*?)\n        \],', body, re.S)
+    """The entry's anims, each as a dict of all its fields, so a changed fps
+    or an added sort_y shows. The whole array is read wherever its line
+    breaks fall, and every field must be a "key": value of a plain string,
+    int or decimal; anything else (an exponent, a bool, a nested value) raises
+    ValueError rather than being skipped."""
+    m = re.search(r'"anims"\s*:\s*\[', body)
+    if not m:
+        return []
+    depth, i = 1, m.end()
+    while depth:
+        if i >= len(body):
+            raise ValueError("the anims array is not closed")
+        depth += {"[": 1, "]": -1}.get(body[i], 0)
+        i += 1
+    inner = body[m.end():i - 1]
     anims = []
-    for item in re.findall(r'\{([^{}]*)\}', m.group(1) if m else ""):
+    for item in re.findall(r'\{([^{}]*)\}', inner):
+        if not re.fullmatch(r'%s(,%s)*,?\s*' % (_FIELD, _FIELD), item):
+            raise ValueError("an anim this check cannot read whole: {%s}" % item.strip())
         fields = {}
-        for k, v in re.findall(r'"(\w+)": ("[^"]*"|-?[\d.]+)', item):
-            fields[k] = v.strip('"') if v.startswith('"') else (float(v) if "." in v else int(v))
+        for k, v in re.findall(_FIELD, item):
+            fields[k] = v[1:-1] if v.startswith('"') else (float(v) if "." in v else int(v))
         anims.append(fields)
+    if re.sub(r'\{[^{}]*\}|[\s,]', "", inner):
+        raise ValueError("the anims array holds something other than anims: [%s]" % inner.strip())
     return anims
 
 
@@ -1295,15 +1317,15 @@ def check(out_dir):
     the closed one whole; each anim strip is its declared frames of its
     declared size; the bar's sale point is on the counter."""
     ok = True
-    # The grouping refuses the bar's split moved a pixel either way: a gap
-    # between the arms, or an overlap.
+    # The grouping refuses the bar's split moved a pixel either way (an
+    # overlap, a gap between the arms) and a collapsed arm.
     bar = ROOMS[COMMON_KEY]["pieces"]
-    for dy in (-1, 1):
-        (x, y, w, h, s), p = bar[1]
-        moved = [bar[0], ((x, y + dy, w, h - dy, s), p)] + bar[2:]
+    (x, y, w, h, s), p = bar[1]
+    for label, arm in (("moved up a px", (x, y - 1, w, h + 1, s)), ("moved down a px", (x, y + 1, w, h - 1, s)),
+                       ("collapsed", (x, y, w, 0, s))):
         try:
-            piece_groups(moved)
-            print("the bar's split moved by %d px was not refused" % dy)
+            piece_groups([bar[0], (arm, p)] + bar[2:])
+            print("the bar's front arm %s was not refused" % label)
             ok = False
         except ValueError:
             pass
@@ -1325,6 +1347,10 @@ def check(out_dir):
         common, pieces, door = spec["sheets"]
         want = {"sheet": "res://assets/interiors/%s.png" % common, "pieces_sheet": "res://assets/interiors/%s.png" % pieces}
         door_m = re.search(r'"door_open": "([^"]+)"', body)
+        try:
+            anims = _entry_anims(body)
+        except ValueError as e:
+            anims = "unreadable (%s)" % e
         points = {}
         for k in ("bar", "reach"):
             m = re.search(r'"%s": \{"x": (-?\d+), "y": (-?\d+)\}' % k, body)
@@ -1337,7 +1363,7 @@ def check(out_dir):
                 ("size", entry["size"], spec["size"]),
                 ("pieces", entry["pieces"], [r for r, _p in spec["pieces"]]),
                 ("covers", entry["covers"], spec["covers"]),
-                ("anims", _entry_anims(body), spec["anims"]),
+                ("anims", anims, spec["anims"]),
                 ("bar and reach", points, {k: spec[k] for k in ("bar", "reach") if k in spec})):
             if got != expect:
                 print("%s: interior_rooms.gd %s are %s, the painted %s" % (key, label, got, expect))
