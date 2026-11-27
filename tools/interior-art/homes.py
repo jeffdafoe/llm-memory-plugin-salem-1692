@@ -77,7 +77,7 @@ def red_tiny_room(seed=969):
 def red_tiny_pieces(seed=970):
     rnd = random.Random(seed)
     spec = ROOMS["home_red_tiny"]
-    return C.paint_pieces(*spec["size"], [((x, y, w, h), (lambda room, p=painter, r=(x, y, w, h): p(room, *r, rnd)))
+    return C.paint_pieces(*spec["size"], [((x, y, w, h), (lambda room, px, py, pw, ph, p=painter: p(room, px, py, pw, ph, rnd)))
                                          for (x, y, w, h, _sort), painter in spec["pieces"]], C.PIECE_PALETTE)
 
 
@@ -98,7 +98,9 @@ ROOMS = {
         "pieces": [
             ((80, 44, 32, 44, 71), _bed(C.INDIGO, "overshot")),
             ((80, 98, 32, 44, 125), _bed(C.MADDER, "check")),
-            ((32, 70, 32, 25, 88), lambda room, x, y, w, h, rnd: C.trestle_table(room, x, y, w, h, rnd)),
+            # The table ends where the east chair begins (the pack's rects
+            # overlapped by 3 px, which would cut tabletop into the chair).
+            ((32, 70, 29, 25, 88), lambda room, x, y, w, h, rnd: C.trestle_table(room, x, y, w, h, rnd)),
             ((16, 68, 14, 27, 89), _chair(True)),
             ((61, 68, 14, 27, 89), _chair(False)),
             ((0, 96, 16, 48, 143), lambda room, x, y, w, h, rnd: C.cupboard(room, x, y, w, h)),

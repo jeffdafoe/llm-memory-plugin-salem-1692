@@ -4598,16 +4598,30 @@ func _test_painted_room_density() -> void:
         [fire != null, fire.scale if fire else Vector2.ZERO, fire.position if fire else Vector2.ZERO],
         [true, Vector2(0.5, 0.5), Vector2(12, 36)])
     # Taps work in room pixels whatever the density: a tap on the bare table
-    # finds nobody, a tap on a person standing in the room finds them.
+    # finds nobody; a tap on someone seated on a chair, at a point that is
+    # also on the chair's piece, finds them, not the furniture.
     _panel.close()
-    _person("abel", _farmer(), sid)
+    var abel := _person("abel", _farmer(), sid)
+    var seat := {}
+    for st in plan["stations"]:
+        if str(st.get("id", "")) == "chair_west":
+            seat = st
+    abel.set_meta("room_square", seat["square"])
     _panel.open(sid)
     _panel.k = 4
     _panel._stretch = Vector2.ONE
     _panel._scene.position = Vector2.ZERO
     _check("a tap on the bare table finds nothing", _panel.thing_at(_at_art(Vector2(48, 74))), {})
-    var stood: Node2D = _panel._holder("abel")
-    _check("a tap on someone standing finds them", str(_panel.thing_at(_at_art(stood.position + Vector2(0, -16))).get("id", "")) if stood else "", "abel")
+    var sat: Node2D = _panel._holder("abel")
+    var tap := (sat.position + Vector2(0, -8)) if sat else Vector2.ZERO
+    var chair: Dictionary = {}
+    for pc in art["pieces"]:
+        if int(pc["x"]) == 16 and int(pc["y"]) == 68:
+            chair = pc
+    var on_chair := Rect2(int(chair["x"]), int(chair["y"]), int(chair["w"]), int(chair["h"])).has_point(tap)
+    _check("seated on the west chair, the tap point is on the chair's piece too",
+        [sat != null and sat.position == Vector2(int(seat["at"][0]), int(seat["at"][1])), on_chair], [true, true])
+    _check("a tap on someone seated over the furniture finds them", str(_panel.thing_at(_at_art(tap)).get("id", "")), "abel")
     _panel.close()
     _clear_people()
     # A pack room is still drawn one to one.

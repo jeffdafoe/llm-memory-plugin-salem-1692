@@ -174,24 +174,45 @@ def shrink(room, palette, outline=0.0, shadow_dark=0.45, ring=0.0):
     return out
 
 
+PIECE_PAD = 8                # room px of margin round a piece while it is painted
+
+
 def paint_pieces(w, h, pieces, palette, outline=0.35, ring=0.18):
-    """The pieces sheet: each piece painted on its own canvas by its painter
-    (called with the Room; it draws in room px into its rect), shrunk, and
-    refused if any of its art falls outside its rect, since the client cuts a
-    piece by its rect and would clip the rest; then pasted into the sheet
-    cropped to its rect, so no piece bleeds into a neighbour.
-    pieces: [((x, y, w, h), painter)]."""
+    """The pieces sheet (w x h room px). pieces: [((x, y, pw, ph), painter)],
+    painter(room, x, y, pw, ph) drawing the piece into that rect in room px.
+
+    The client cuts every piece (and every bed's cover) out of this sheet by
+    its rect, so:
+      - no two rects may overlap: the client would cut both sprites from the
+        same pixels and one piece's art would ride in the other's sprite;
+      - a piece must paint nothing outside its rect, which would be clipped;
+      - a piece must paint something.
+    Each piece is painted alone on a canvas PIECE_PAD room px bigger than the
+    sheet on every side (so a stroke that runs off the sheet's edge is still
+    seen), shrunk, checked, and pasted into the sheet cropped to its rect.
+    Any breach raises ValueError naming the piece."""
+    rects = [r for r, _p in pieces]
+    for i, (ax, ay, aw, ah) in enumerate(rects):
+        for bx, by, bw, bh in rects[i + 1:]:
+            if ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah:
+                raise ValueError("pieces %s and %s overlap" % ((ax, ay, aw, ah), (bx, by, bw, bh)))
+    pad = PIECE_PAD
     sheet = Image.new("RGBA", (w * DENSITY, h * DENSITY), (0, 0, 0, 0))
     for (x, y, pw, ph), painter in pieces:
-        room = Room(w, h)
-        painter(room)
+        room = Room(w + 2 * pad, h + 2 * pad)
+        painter(room, x + pad, y + pad, pw, ph)
         art = shrink(room, palette, outline=outline, ring=ring)
-        box = (x * DENSITY, y * DENSITY, (x + pw) * DENSITY, (y + ph) * DENSITY)
+        box = ((x + pad) * DENSITY, (y + pad) * DENSITY, (x + pad + pw) * DENSITY, (y + pad + ph) * DENSITY)
         outside = art.copy()
         outside.paste((0, 0, 0, 0), box)
         if outside.getbbox() is not None:
-            raise ValueError("piece %s paints outside its rect, at %s (art px)" % ((x, y, pw, ph), outside.getbbox()))
-        sheet.alpha_composite(art.crop(box), box[:2])
+            b = outside.getbbox()
+            raise ValueError("piece %s paints outside its rect, at %s (art px, sheet origin)"
+                             % ((x, y, pw, ph), tuple(v - pad * DENSITY for v in b)))
+        cut = art.crop(box)
+        if cut.getbbox() is None:
+            raise ValueError("piece %s paints nothing" % ((x, y, pw, ph),))
+        sheet.alpha_composite(cut, (x * DENSITY, y * DENSITY))
     return sheet
 
 
