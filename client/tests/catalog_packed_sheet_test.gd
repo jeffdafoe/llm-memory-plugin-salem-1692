@@ -204,6 +204,8 @@ const WAGONS := {
     "res://assets/trees/cart.png": Vector2i(128, 96),
     # migrations/LLM-968k-painted-bridge_up.sql (tools/tree-art/bridge.py).
     "res://assets/trees/bridge.png": Vector2i(192, 128),
+    # migrations/LLM-968l-painted-millstone_up.sql (tools/tree-art/millstone.py).
+    "res://assets/trees/millstone.png": Vector2i(64, 64),
 }
 
 var _failures := 0
