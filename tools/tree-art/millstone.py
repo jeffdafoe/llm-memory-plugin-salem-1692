@@ -72,7 +72,7 @@ def harps(d, rnd, cx, cy, rx, ry, tone, eye):
         b = a + 0.32
         reach = rnd.uniform(0.55, 0.88)
         ex, ey = cx + rx * reach * math.cos(b), cy + ry * reach * math.sin(b)
-        line(d, [(sx, sy), (ex, ey)], B.ramp(GRANITE, tone - 0.14), 0.35)
+        line(d, [(sx, sy), (ex, ey)], B.ramp(GRANITE, tone - 0.19), 0.35)
         line(d, [(sx, sy - 0.25), (ex, ey - 0.25)], B.ramp(GRANITE, tone + 0.08), 0.2)
 
 
@@ -116,12 +116,18 @@ def paint_millstone(seed=968):
           fill=B.ramp(GRANITE, 0.9), width=max(1, int(0.45 * P.S)))
 
     # The chock: a wooden wedge driven under the runner's foot, on the right
-    # where the bed stone does not hide it, its top lit.
+    # where the bed stone does not hide it. Seen from the side: its thick end
+    # stands under the runner's rim, touching it, and its lit top slopes down
+    # to a point on the ground.
     foot = rcy + rr
-    wedge = [(rcx + 3.6, base - 0.4), (rcx + 8.4, base - 0.6), (rcx + 4.6, foot - 0.6)]
+    thick = rcx + 3.4
+    wedge = [(thick, base - 0.3), (thick + 4.2, base - 0.4), (thick, foot - 0.4)]
     d.polygon([(x * P.S, y * P.S) for x, y in wedge], fill=B.ramp(WOOD, 0.5))
-    line(d, [wedge[2], wedge[1]], B.ramp(WOOD, 0.78), 0.4)
-    line(d, [wedge[0], wedge[1]], B.ramp(WOOD, 0.28), 0.35)
+    line(d, [wedge[2], wedge[1]], B.ramp(WOOD, 0.8), 0.4)
+    line(d, [wedge[0], wedge[1]], B.ramp(WOOD, 0.25), 0.35)
+    # Its thick end in shade, and the dark line where it meets the stone.
+    line(d, [wedge[0], wedge[2]], B.ramp(WOOD, 0.3), 0.45)
+    line(d, [(thick - 0.3, foot - 0.5), (thick + 1.2, foot - 0.2)], B.ramp(GRANITE, 0.1), 0.35)
     return F.shrink_shaded(lay, shade, PALETTE)
 
 
