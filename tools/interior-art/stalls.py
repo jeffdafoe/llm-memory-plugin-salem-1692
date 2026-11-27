@@ -52,8 +52,6 @@ from PIL import Image, ImageDraw, ImageFilter
 import common as C
 import stall_goods as G
 
-C.set_density(2)
-
 B = C.B
 ramp = C.ramp
 
@@ -113,7 +111,7 @@ SMITHY = TRADES["smithy"]
 SMITHY_W = SMITHY["size"][0]
 FIRE = SMITHY["fire"]
 BELLOWS_AT = (SMITHY["bellows_art"]["x"], SMITHY["bellows_art"]["y"])
-W, H = 128, 112
+C.set_density(DENSITY)
 
 # Trodden earth and the grass at the market's edges; the far side of the
 # market seen through the booth's open back.
@@ -864,36 +862,129 @@ SHEETS["stall_goods"] = G.sheet
 # frames of BELLOWS_FRAME, the goods sheet its grid at the goods density.
 SIZES = {}
 for _k in ROOFS:
-    SIZES["stall_%s" % _k] = (W * 2, H * 2)
-    SIZES["stall_%s_smithy" % _k] = (SMITHY_W * 2, H * 2)
-    SIZES["stall_counter_%s" % _k] = (W * 2, H * 2)
-    SIZES["stall_counter_%s_smithy" % _k] = (SMITHY_W * 2, H * 2)
-SIZES["stall_smithy_bellows"] = (BELLOWS_FRAME[0] * 2 * 2, BELLOWS_FRAME[1] * 2)
+    SIZES["stall_%s" % _k] = (W * DENSITY, H * DENSITY)
+    SIZES["stall_%s_smithy" % _k] = (SMITHY_W * DENSITY, SMITHY["size"][1] * DENSITY)
+    SIZES["stall_counter_%s" % _k] = (W * DENSITY, H * DENSITY)
+    SIZES["stall_counter_%s_smithy" % _k] = (SMITHY_W * DENSITY, SMITHY["size"][1] * DENSITY)
+SIZES["stall_smithy_bellows"] = (BELLOWS_FRAME[0] * 2 * DENSITY, BELLOWS_FRAME[1] * DENSITY)
 SIZES["stall_goods"] = (G.COLUMNS * G.CELL[0] * G.DENSITY, G.ROWS * G.CELL[1] * G.DENSITY)
 
 
+# A GDScript string literal, for gd_const.
+GD_STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+
+
 def gd_const(text, name):
-    """A constant of stall_scenes.gd as Python data: its literal, comments
-    dropped, Vector2i and Rect2i as lists, read as JSON."""
-    m = re.search(r"\nconst %s := " % name, text)
+    """A constant of stall_scenes.gd as Python data. The value runs from
+    `const NAME := ` to the end of the line its brackets close on; comments
+    (# outside a string) are dropped, strings kept whole. Outside strings,
+    Vector2i(...) and Rect2i(...) become lists and trailing commas go; the
+    whole value must then read as JSON, so anything else after it (an
+    operator, another value) is refused with ValueError."""
+    m = re.search(r"^const %s := " % re.escape(name), text, re.M)
     if not m:
         raise ValueError("stall_scenes.gd has no const %s" % name)
-    i = j = m.end()
-    if text[i] in "{[":
-        depth = 0
-        while True:
-            depth += text[j] in "{[("
-            depth -= text[j] in "}])"
-            if depth == 0:
+    out, depth, j, in_str, esc = [], 0, m.end(), False, False
+    while j < len(text):
+        ch = text[j]
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+            out.append(ch)
+        elif ch == "#":
+            j = text.find("\n", j)
+            if j < 0:
                 break
-            j += 1
-        lit = text[i:j + 1]
-    else:
-        lit = text[i:text.index("\n", i)]
-    lit = re.sub(r"#[^\n]*", "", lit)
-    lit = re.sub(r"(?:Vector2i|Rect2i)\(([^)]*)\)", r"[\1]", lit)
-    lit = re.sub(r",(\s*[}\]])", r"\1", lit)
-    return json.loads(lit)
+            continue
+        elif ch == "\n" and depth == 0:
+            break
+        else:
+            if ch in "{[(":
+                depth += 1
+            elif ch in "}])":
+                depth -= 1
+                if depth < 0:
+                    raise ValueError("const %s: an unmatched %s" % (name, ch))
+            out.append(ch)
+        j += 1
+    if in_str or depth:
+        raise ValueError("const %s: an unterminated %s" % (name, "string" if in_str else "bracket"))
+    lit = "".join(out).strip()
+    parts = []
+    last = 0
+    for sm in GD_STRING.finditer(lit):
+        parts.append(_gd_plain(lit[last:sm.start()]))
+        parts.append(sm.group(0))
+        last = sm.end()
+    parts.append(_gd_plain(lit[last:]))
+    try:
+        return json.loads("".join(parts))
+    except ValueError:
+        raise ValueError("const %s is not a supported literal: %s" % (name, lit))
+
+
+def _gd_plain(seg):
+    """A stretch of a GDScript literal outside strings, as JSON."""
+    seg = re.sub(r"\b(?:Vector2i|Rect2i)\(([^()]*)\)", r"[\1]", seg)
+    return re.sub(r",(\s*[}\]])", r"\1", seg)
+
+
+def selftest():
+    """gd_const and the cut-art guard on cases made to fool them; a list of
+    what failed."""
+    failed = []
+
+    def expect(label, got, want):
+        if got != want:
+            failed.append("%s: got %r, want %r" % (label, got, want))
+
+    def refused(label, f):
+        try:
+            f()
+        except ValueError:
+            return
+        failed.append("%s: not refused" % label)
+
+    expect("a brace in a comment", gd_const('\nconst A := {"a": 1, # } ] closing in a comment\n    "b": [2],\n}\n', "A"),
+           {"a": 1, "b": [2]})
+    expect("a # in a string", gd_const('\nconst B := {"p": "x#y", "q": "Vector2i(1, 2)"}  # note\n', "B"),
+           {"p": "x#y", "q": "Vector2i(1, 2)"})
+    expect("a vector, a comment after it", gd_const("\nconst V := Vector2i(4, 1)  # note\n", "V"), [4, 1])
+    refused("a trailing token after a collection", lambda: gd_const("\nconst T := [1, 2] + [3]\n", "T"))
+    refused("a trailing token after a scalar", lambda: gd_const("\nconst N := 76 + 1\n", "N"))
+    refused("an unterminated string", lambda: gd_const('\nconst U := {"a": "b}\n', "U"))
+
+    col = C.ramp(C.IRON, 0.5)
+
+    def stray(r, rnd):
+        r.rect(7, 28, 9, 30, col)
+        r.line([(14, 29), (19, 29)], col, 0.6)
+
+    def fits(r, rnd):
+        r.rect(7, 28, 9, 30, col)
+
+    def run(painter):
+        saved = C.DENSITY
+        C.set_density(G.DENSITY)
+        try:
+            G.guarded(G.CELL[0], G.CELL[1], lambda r: painter(r, random.Random(1)), G.PALETTE, "selftest")
+        finally:
+            C.set_density(saved)
+
+    refused("a heaped good with a stroke off its cell", lambda: run(G.on_crate(stray)))
+    refused("a stacked dish with a stroke off its cell", lambda: run(G.stack(stray)))
+    try:
+        run(G.on_crate(fits))
+    except ValueError as e:
+        failed.append("a heaped good inside its cell refused: %s" % e)
+    return failed
 
 
 def declared():
@@ -917,6 +1008,9 @@ def check(out_dir):
     (counter_for's rule) and the bellows are painted here; the goods sheet
     holds every good's two cells, each good within the tap box's rows."""
     ok = True
+    for f in selftest():
+        print("selftest: " + f)
+        ok = False
     sheets = {}
     for name, build in SHEETS.items():
         path = os.path.join(out_dir, name + ".png")
@@ -1006,7 +1100,7 @@ def compose(sheet, counter, goods, d, gd, wares, villager, smithy=False, bellows
 def preview(out_path, sheet_dir, pack_dir=None, villager=None, zoom=2):
     """Every scene (plain, then smithy, each roof) with its people and
     goods, the pack's version beside it at the same scale when pack_dir is
-    given; then the goods sheet, the pack's above it."""
+    given; then the goods sheet beside the pack's, on a brown ground."""
     vil = Image.open(villager).convert("RGBA") if villager else Image.new("RGBA", (64, 64), (0, 0, 0, 0))
 
     def load(d, name):
@@ -1027,6 +1121,17 @@ def preview(out_path, sheet_dir, pack_dir=None, villager=None, zoom=2):
                               load(pack_dir, "stall_goods"), 1, 1, wares, vil, smithy,
                               load(pack_dir, "stall_smithy_bellows") if smithy else None)
             rows.append((old, new))
+    # The goods sheets at the scenes' scale (2 px per room px).
+    new = goods.resize((goods.width * 2 // G.DENSITY, goods.height * 2 // G.DENSITY), Image.NEAREST)
+    old = None
+    if pack_dir:
+        pg = load(pack_dir, "stall_goods")
+        old = pg.resize((pg.width * 2, pg.height * 2), Image.NEAREST)
+    for im in [new] + ([old] if old else []):
+        back = Image.new("RGBA", im.size, (110, 84, 58, 255))
+        back.alpha_composite(im)
+        im.paste(back)
+    rows.append((old, new))
     width = max((o.width + 8 if o else 0) + n.width for o, n in rows)
     height = sum(n.height + 8 for _o, n in rows)
     sheet = Image.new("RGBA", (width, height), (0, 0, 0, 255))

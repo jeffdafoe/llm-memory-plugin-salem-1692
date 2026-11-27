@@ -1253,12 +1253,12 @@ def p_porridge(r, rnd):
 
 
 def stack(painter, n=3, step=2.4):
-    """A pile of a dish: the dish stacked n high."""
+    """A pile of a dish: the dish stacked n high. Each dish is painted
+    guarded in a cell of its own first, so none is clipped unseen."""
     def paint(r, rnd):
+        _art, sub = guarded(CELL[0], CELL[1], lambda c: painter(c, random.Random(7)), PALETTE, "a stacked dish")
         for k in range(n):
-            sub = C.Room(*CELL)
-            painter(sub, random.Random(7))
-            r.paste(sub.lay, (0, -int(k * step * C.S)))
+            r.paste(sub.canvas(), (0, -int(k * step * C.S)))
     return paint
 
 
@@ -1269,11 +1269,14 @@ def heap(r, good, rnd, container="crate"):
     little to sit side by side in its mouth."""
     rim = 23
     (crate_back if container == "crate" else basket_back)(r, 1, 15, rim)
-    sub = C.Room(*CELL)
-    good(sub, random.Random(11))
-    box = sub.lay.getbbox()
+    # The good painted guarded in a cell of its own, so a stroke off its
+    # cell is refused, not clipped unseen before it is laid on the heap.
+    seed = rnd.randrange(1 << 30)
+    _art, sub = guarded(CELL[0], CELL[1], lambda c: good(c, random.Random(seed)), PALETTE, "a heaped good")
+    lay = sub.canvas()
+    box = lay.getbbox()
     if box:
-        art = sub.lay.crop(box)
+        art = lay.crop(box)
         k = min(1.0, 9.5 * C.S / art.width)
         art = art.resize((max(1, int(art.width * k)), max(1, int(art.height * k))), Image.LANCZOS)
         for i, (x, dy) in enumerate(((1.4, 0.0), (15 - 1.4, -1.4))):
@@ -1450,14 +1453,11 @@ class Shifted:
         return self.room.lay.crop((p, p, p + self.w * C.S, p + self.h * C.S))
 
 
-def guarded(w, h, paint, palette, name, outline=0.0, ring=0.0):
-    """Paint art cut by a w x h rect: paint(canvas) on a Shifted canvas,
-    shrunk; raises ValueError naming it if anything lands outside the rect
-    or nothing inside it. Returns (the art cropped to the rect, the canvas)."""
-    c = Shifted(w, h)
-    paint(c)
-    art = C.shrink(c.room, palette, outline=outline, ring=ring)
-    p = c.pad * C.DENSITY
+def inside(art, pad, w, h, name):
+    """Shrunk art of a canvas padded `pad` room px round a w x h rect, cut to
+    the rect; ValueError naming it if any of it lies outside the rect or
+    none inside."""
+    p = pad * C.DENSITY
     box = (p, p, p + w * C.DENSITY, p + h * C.DENSITY)
     outside = art.copy()
     outside.paste((0, 0, 0, 0), box)
@@ -1467,16 +1467,27 @@ def guarded(w, h, paint, palette, name, outline=0.0, ring=0.0):
     cut = art.crop(box)
     if cut.getbbox() is None:
         raise ValueError("%s paints nothing" % name)
-    return cut, c
+    return cut
 
 
-def grow_to_fit(lay, grow, top_row):
-    """A cell's canvas grown about its foot (bottom middle) by up to `grow`,
-    as far as its art still fits the cell and stays below `top_row`."""
+def guarded(w, h, paint, palette, name, outline=0.0, ring=0.0):
+    """Paint art cut by a w x h rect: paint(canvas) on a Shifted canvas,
+    shrunk; raises ValueError naming it if anything lands outside the rect
+    or nothing inside it. Returns (the art cropped to the rect, the canvas)."""
+    c = Shifted(w, h)
+    paint(c)
+    art = C.shrink(c.room, palette, outline=outline, ring=ring)
+    return inside(art, c.pad, w, h, name), c
+
+
+def grow_factor(lay, grow, top_row):
+    """How far a cell's canvas (lay, the cell's own canvas px) can grow
+    about its foot (bottom middle), up to `grow`: as far as its art still
+    fits the cell and stays below `top_row`; never below 1."""
     w, h = lay.size
     box = lay.split()[3].point(lambda a: 255 if a >= 64 else 0).getbbox()
     if box is None or grow <= 1.0:
-        return lay
+        return 1.0
     cx = w / 2
     k = grow
     if box[0] < cx:
@@ -1484,19 +1495,33 @@ def grow_to_fit(lay, grow, top_row):
     if box[2] > cx:
         k = min(k, (w - cx) / (box[2] - cx))
     k = min(k, (h - top_row * C.S) / max(1, h - box[1]))
-    k = max(1.0, k)
+    return max(1.0, k)
+
+
+def grown(c, k):
+    """The whole padded canvas of a Shifted cell grown k about the cell's
+    foot, so whatever the growth carries past the cell lands on the margin."""
+    lay = c.room.lay
+    if k == 1.0:
+        return lay
+    w, h = lay.size
+    fx, fy = (c.pad + c.w / 2) * C.S, (c.pad + c.h) * C.S
     big = lay.resize((int(round(w * k)), int(round(h * k))), Image.LANCZOS)
+    ox, oy = int(round(fx * k - fx)), int(round(fy * k - fy))
     out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    out.alpha_composite(big, (0, 0), ((big.width - w) // 2, big.height - h, (big.width - w) // 2 + w, big.height))
+    out.paste(big.crop((ox, oy, ox + w, oy + h)), (0, 0))
     return out
 
 
 def paint_cell(painter, seed, name, pile=False):
-    """One goods cell: painted guarded within the cell, then grown to fit."""
+    """One goods cell: painted guarded within the cell, then grown to fit
+    and shrunk with its outline on the padded canvas, and guarded again
+    there before it is cut to the cell."""
     _art, c = guarded(CELL[0], CELL[1], lambda r: painter(r, random.Random(seed)), PALETTE, name, OUTLINE, RING)
-    r = C.Room(*CELL)
-    r.lay = grow_to_fit(c.canvas(), PILE_GROW if pile else GOOD_GROW, 0 if pile else CELL[1] - GOOD_ROWS)
-    return C.shrink(r, PALETTE, outline=OUTLINE, ring=RING)
+    k = grow_factor(c.canvas(), PILE_GROW if pile else GOOD_GROW, 0 if pile else CELL[1] - GOOD_ROWS)
+    r = C.Room(c.room.w, c.room.h)
+    r.lay = grown(c, k)
+    return inside(C.shrink(r, PALETTE, outline=OUTLINE, ring=RING), c.pad, CELL[0], CELL[1], name + " grown")
 
 
 ROWS = math.ceil(len(GOODS) * 2 / COLUMNS)
