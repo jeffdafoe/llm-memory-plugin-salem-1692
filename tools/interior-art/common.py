@@ -498,7 +498,8 @@ def hearth(room, x0, x1, top, wall_bottom, fire_box, rnd):
         while x < x1:
             w = rnd.uniform(4.5, 8.0)
             a, b = max(x0, x + 0.3), min(x1, x + w - 0.3)
-            if b - a > 1.0:
+            # A last course under 0.6 px tall would draw an inverted stone.
+            if b - a > 1.0 and y - t0 > 0.6:
                 tone = 0.5 + rnd.uniform(-0.18, 0.16)
                 room.d.rounded_rectangle((a * S, (t0 + 0.3) * S, b * S, (y - 0.3) * S), radius=int(1.2 * S),
                                          fill=ramp(STONE, tone))

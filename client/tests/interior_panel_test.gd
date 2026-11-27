@@ -4151,7 +4151,9 @@ func _test_home_sleepers_in_bed() -> void:
     standing.free()
     var cover: Sprite2D = held.get_node_or_null("Cover")
     var want: Dictionary = _panel.room["covers"]["bed"]
-    _check("the bed's cover over them", cover != null and cover.region_rect == Rect2(want["x"], want["y"], want["w"], want["h"]), true)
+    # The region is in the sheet's pixels: the cover rect times the room's density.
+    var d := int(_panel.room.get("density", 1))
+    _check("the bed's cover over them", cover != null and cover.region_rect == Rect2(want["x"] * d, want["y"] * d, want["w"] * d, want["h"] * d), true)
     _check("the cover in place", cover.position + held.position if cover != null else Vector2.ZERO, Vector2(want["x"], want["y"]))
     var pallet: Node2D = _panel._holder("anne")
     _check("a pack sleeper shows as they stand", _anim(pallet), &"south_idle")

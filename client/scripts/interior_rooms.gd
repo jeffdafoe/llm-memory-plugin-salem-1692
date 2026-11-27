@@ -83,8 +83,9 @@ const ROOMS := {
     # cover on pieces_sheet (by the plan's bed id), drawn again over its sleeper
     # up to the chin.
     "home_red_medium": {
-        "sheet": "/tilesets/interiors/home_red_medium_common.png",
-        "pieces_sheet": "/tilesets/interiors/home_red_medium_pieces.png",
+        "sheet": "res://assets/interiors/home_red_medium_common.png",
+        "pieces_sheet": "res://assets/interiors/home_red_medium_pieces.png",
+        "density": 2,
         "size": Vector2i(112, 112),
         "pieces": [
             {"x": 64, "y": 28, "w": 16, "h": 37, "sort_y": 65},
@@ -99,29 +100,30 @@ const ROOMS := {
             "pallet": {"x": 0, "y": 74, "w": 32, "h": 36},
         },
         "anims": [
-            {"sheet": "/tilesets/interiors/home_fire_thatch.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
+            {"sheet": "res://assets/interiors/home_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
         ],
     },
     "home_red_small": {
-        "sheet": "/tilesets/interiors/home_red_small_common.png",
-        "pieces_sheet": "/tilesets/interiors/home_red_small_pieces.png",
+        "sheet": "res://assets/interiors/home_red_small_common.png",
+        "pieces_sheet": "res://assets/interiors/home_red_small_pieces.png",
+        "density": 2,
         "size": Vector2i(96, 144),
         "pieces": [
-            {"x": 80, "y": 28, "w": 16, "h": 37, "sort_y": 65},
+            {"x": 80, "y": 28, "w": 16, "h": 34, "sort_y": 65},
             {"x": 64, "y": 62, "w": 32, "h": 44, "sort_y": 89},
             {"x": 0, "y": 60, "w": 32, "h": 48, "sort_y": 86},
-            {"x": 0, "y": 114, "w": 32, "h": 25, "sort_y": 132},
+            {"x": 0, "y": 114, "w": 29, "h": 25, "sort_y": 132},
             {"x": 29, "y": 112, "w": 14, "h": 27, "sort_y": 133},
-            {"x": 64, "y": 112, "w": 32, "h": 16, "sort_y": 127},
-            {"x": 68, "y": 112, "w": 16, "h": 27, "sort_y": 139},
-            {"x": 80, "y": 116, "w": 16, "h": 27, "sort_y": 143},
+            {"x": 64, "y": 112, "w": 32, "h": 10, "sort_y": 127},
+            {"x": 68, "y": 122, "w": 12, "h": 17, "sort_y": 139},
+            {"x": 80, "y": 122, "w": 16, "h": 21, "sort_y": 143},
         ],
         "covers": {
             "bed": {"x": 64, "y": 74, "w": 32, "h": 32},
             "pallet": {"x": 0, "y": 72, "w": 32, "h": 36},
         },
         "anims": [
-            {"sheet": "/tilesets/interiors/home_fire_thatch.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
+            {"sheet": "res://assets/interiors/home_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
         ],
     },
     # Painted (LLM-969): tools/interior-art/homes.py, at twice the room's
@@ -149,13 +151,14 @@ const ROOMS := {
         ],
     },
     "home_blue_tiny": {
-        "sheet": "/tilesets/interiors/home_blue_tiny_common.png",
-        "pieces_sheet": "/tilesets/interiors/home_blue_tiny_pieces.png",
+        "sheet": "res://assets/interiors/home_blue_tiny_common.png",
+        "pieces_sheet": "res://assets/interiors/home_blue_tiny_pieces.png",
+        "density": 2,
         "size": Vector2i(112, 144),
         "pieces": [
             {"x": 80, "y": 44, "w": 32, "h": 44, "sort_y": 71},
             {"x": 80, "y": 98, "w": 32, "h": 44, "sort_y": 125},
-            {"x": 32, "y": 70, "w": 32, "h": 25, "sort_y": 88},
+            {"x": 32, "y": 70, "w": 29, "h": 25, "sort_y": 88},
             {"x": 16, "y": 68, "w": 14, "h": 27, "sort_y": 89},
             {"x": 61, "y": 68, "w": 14, "h": 27, "sort_y": 89},
             {"x": 0, "y": 96, "w": 16, "h": 48, "sort_y": 143},
@@ -166,7 +169,7 @@ const ROOMS := {
             "bed_south": {"x": 80, "y": 110, "w": 32, "h": 32},
         },
         "anims": [
-            {"sheet": "/tilesets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
+            {"sheet": "res://assets/interiors/home_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
         ],
     },
     # The Inn upstairs (LLM-801), keyed by the room plans' `art`. The hall is
@@ -234,14 +237,15 @@ const ROOMS := {
         },
     },
     "home_blue_small": {
-        "sheet": "/tilesets/interiors/home_blue_small_common.png",
-        "pieces_sheet": "/tilesets/interiors/home_blue_small_pieces.png",
+        "sheet": "res://assets/interiors/home_blue_small_common.png",
+        "pieces_sheet": "res://assets/interiors/home_blue_small_pieces.png",
+        "density": 2,
         "size": Vector2i(112, 160),
         "pieces": [
-            {"x": 96, "y": 28, "w": 16, "h": 37, "sort_y": 65},
+            {"x": 96, "y": 28, "w": 16, "h": 32, "sort_y": 65},
             {"x": 80, "y": 60, "w": 32, "h": 44, "sort_y": 87},
             {"x": 80, "y": 114, "w": 32, "h": 44, "sort_y": 141},
-            {"x": 32, "y": 86, "w": 32, "h": 25, "sort_y": 104},
+            {"x": 32, "y": 86, "w": 29, "h": 25, "sort_y": 104},
             {"x": 16, "y": 84, "w": 14, "h": 27, "sort_y": 105},
             {"x": 61, "y": 84, "w": 14, "h": 27, "sort_y": 105},
             {"x": 0, "y": 112, "w": 16, "h": 48, "sort_y": 159},
@@ -252,18 +256,19 @@ const ROOMS := {
             "bed_south": {"x": 80, "y": 126, "w": 32, "h": 32},
         },
         "anims": [
-            {"sheet": "/tilesets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
+            {"sheet": "res://assets/interiors/home_fire.png", "frames": 4, "fps": 8.0, "x": 12, "y": 36},
         ],
     },
     # The player's tent (LLM-798): the Traveler's Camp interior, the bedroll
     # along the left (its front layer the sleeper's cover) and a small pack.
     # Built by build_rooms.gd's _tent(), which prints these.
     "tent": {
-        "sheet": "/tilesets/interiors/tent_common.png",
-        "pieces_sheet": "/tilesets/interiors/tent_pieces.png",
+        "sheet": "res://assets/interiors/tent_common.png",
+        "pieces_sheet": "res://assets/interiors/tent_pieces.png",
+        "density": 2,
         "size": Vector2i(96, 112),
         "pieces": [
-            {"x": 13, "y": 58, "w": 29, "h": 42, "sort_y": 89},
+            {"x": 12, "y": 58, "w": 32, "h": 44, "sort_y": 89},
             {"x": 66, "y": 84, "w": 16, "h": 16, "sort_y": 99},
         ],
         "covers": {
