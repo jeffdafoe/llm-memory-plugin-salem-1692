@@ -8,23 +8,28 @@ class_name StallScenes
 ## A stall is a placed object whose asset is one of SHEETS. The customers are
 ## the people standing at its loiter pin (the engine's effective loiter offset,
 ## Chebyshev 1 — where buyers wait), the keeper whoever is inside it. The art
-## is built by the tiles repo's tilesets/interiors/build_stalls.gd and lives
-## on the VPS beside the room art. Spots are art pixels, where the feet go.
+## is painted by tools/interior-art/stalls.py (LLM-969) and packed in the
+## client. Spots, slots and sizes are room pixels, where the feet go; the
+## scenes' sheets have DENSITY art pixels per room pixel (the scene dict's
+## "density", which the window scales them by), the goods sheet
+## GOODS_DENSITY.
 
 const SIZE := Vector2i(128, 112)
+const DENSITY := 2
+## One sheet per roof, each the inside of that roof's booth on the map. The
+## counter in front is the roof's too (counter_for).
 const SHEETS := {
-    "Market Stall (Wood)": "/tilesets/interiors/stall_wood.png",
-    "Market Stall (Tiled)": "/tilesets/interiors/stall_tiled.png",
-    "Market Stall (Fancy)": "/tilesets/interiors/stall_fancy.png",
+    "Market Stall (Wood)": "res://assets/interiors/stall_wood.png",
+    "Market Stall (Tiled)": "res://assets/interiors/stall_tiled.png",
+    "Market Stall (Fancy)": "res://assets/interiors/stall_fancy.png",
 }
 ## Trade backdrops (LLM-762): a stall tagged with a trade in the editor draws
-## its roof's stall dressed for that trade — stall_<roof>_<trade>.png, built
-## beside the plain one by build_stalls.gd — so a second smithy needs only the
-## tag. A trade's entry replaces any of the scene's layout fields (LLM-763):
-## its size, counter picture, `counter_from` (the counter's left edge — the
-## selling side), spots and slots. The smithy is 192 wide: a work area with
-## the forge on the left, the plain stall's layout moved 64 right, and a hand's
-## spot at the forge.
+## its roof's stall dressed for that trade — stall_<roof>_<trade>.png, painted
+## beside the plain one — so a second smithy needs only the tag. A trade's
+## entry replaces any of the scene's layout fields (LLM-763): its size,
+## `counter_from` (the counter's left edge — the selling side), spots and
+## slots. The smithy is 192 wide: a work area with the forge on the left, the
+## plain stall's layout moved 64 right, and a hand's spot at the forge.
 ##
 ## Work spots in the work area (LLM-764), feet where the art puts them: a
 ## farmer-base hand pulls the bellows' right rope at `bellows`, the bellows
@@ -36,10 +41,9 @@ const TRADES := {
         "bellows": {"x": 57, "y": 57, "facing": "north"},
         "anvil": {"x": 36, "y": 84, "facing": "west"},
         "fire": Rect2i(1, 32, 26, 19),
-        # The bellows, open and pressed (LLM-795), over the backdrop's own
-        # at the place build_stalls.gd cut them from.
-        "bellows_art": {"sheet": "/tilesets/interiors/stall_smithy_bellows.png", "x": 30, "y": 24},
-        "counter": "/tilesets/interiors/stall_counter_smithy.png",
+        # The bellows, open and pressed (LLM-795), hung from the beam over the
+        # forge; the backdrop has none of its own.
+        "bellows_art": {"sheet": "res://assets/interiors/stall_smithy_bellows.png", "x": 30, "y": 24},
         "counter_from": 64,
         "keeper": {"x": 128, "y": 66, "facing": "south"},
         "hands": [
@@ -57,8 +61,11 @@ const TRADES := {
         "counter_slots": [68, 84, 100, 140, 156, 172],
     },
 }
-const COUNTER_SHEET := "/tilesets/interiors/stall_counter.png"
-const GOODS_SHEET := "/tilesets/interiors/stall_goods.png"
+## The goods every room shows (a stall's, the Inn's desk, the Tavern's bar).
+## Shared, so it has its own density, not a room's: a cell's region is
+## cell_rect, and its sprite is drawn at 1 / GOODS_DENSITY.
+const GOODS_SHEET := "res://assets/interiors/stall_goods.png"
+const GOODS_DENSITY := 2
 
 const KEEPER := {"x": 64, "y": 66, "facing": "south"}
 ## Hands working in the stall beside the keeper (LLM-759), either side of
@@ -89,7 +96,8 @@ const CELL := Vector2i(16, 32)
 const COLUMNS := 16
 
 ## kind -> goods index in stall_goods.png: cell 2i is the good, 2i+1 the pile.
-## Printed by build_stalls.gd; its GOODS order and this table must agree.
+## tools/interior-art/stall_goods.py paints them in this order (its --check
+## holds the two together): add at the end, never reorder.
 const GOODS := {"apples": 0, "raspberries": 1, "blueberries": 2, "carrots": 3, "wheat": 4, "flour": 5, "salt": 6, "cheese": 7, "milk": 8, "meat": 9, "fried_meat": 10, "bread": 11, "flatbread": 11, "water": 12, "water_from_the_well": 12, "water_from_well": 12, "well_water": 12, "firewood": 13, "sage": 14, "wormwood": 14, "feverfew": 14, "greenweed": 14, "coca_tea": 14, "indigo": 15, "madder": 16, "logwood": 17, "weld": 18, "ale": 19, "small_ale": 19, "mulled_ale": 19, "calming_draught": 20, "locket": 21, "silver_locket": 21, "duck_pendant": 21, "whalebone_charm": 22, "spectacles": 23, "axe": 24, "hammer": 25, "shovel": 26, "nail": 27, "horseshoe": 28, "skillet": 29, "iron": 30, "iron_bar": 30, "whetstone": 31, "thread": 32, "linen": 33, "gloves": 34, "suspenders": 35, "vest": 36, "scarf": 37, "knee_socks": 38, "stockings": 39, "boots": 40, "cuffed_boots": 41, "frilly_skirt": 42, "frilly_dress": 43, "long_dress": 44, "linen_shirt": 45, "mended_shirt": 45, "cloak": 46, "mantle": 47, "mantled_cloak": 48, "brimmed_hat": 49, "felt_hat": 50, "headscarf": 51, "straw_hat": 52, "stew": 54, "porridge": 55, "porridge_empty": 56, "stew_empty": 57, "plate_empty": 57, "journeycake": 58, "ale_empty": 59}
 ## A good with no picture of its own draws as a closed crate.
 const OTHER := 53
@@ -114,9 +122,9 @@ static func scene_for(world: Node, assets: Dictionary, sid: String) -> Dictionar
         "sheet": sheet,
         "floor_slots": FLOOR_SLOTS,
         "counter_slots": COUNTER_SLOTS,
-        "counter": COUNTER_SHEET,
         "counter_from": 0,
         "size": SIZE,
+        "density": DENSITY,
         "keeper": KEEPER,
         "hands": HANDS,
         "door": DOOR,
@@ -127,7 +135,14 @@ static func scene_for(world: Node, assets: Dictionary, sid: String) -> Dictionar
     if trade != "":
         scene["sheet"] = sheet.replace(".png", "_%s.png" % trade)
         scene.merge(TRADES[trade], true)
+    scene["counter"] = counter_for(scene["sheet"])
     return scene
+
+
+## The counter in front of a stall's backdrop: stall_<roof>[_<trade>].png
+## has stall_counter_<roof>[_<trade>].png, the counter in that booth's timber.
+static func counter_for(sheet: String) -> String:
+    return sheet.get_base_dir().path_join("stall_counter_" + sheet.get_file().trim_prefix("stall_"))
 
 
 ## The backdrop for a placed object's asset, or "" when it is not a stall.
@@ -246,6 +261,8 @@ static func goods_index(item: String) -> int:
     return int(GOODS.get(item, OTHER))
 
 
-## A goods cell's region in stall_goods.png.
+## A goods cell's region in stall_goods.png, in the sheet's pixels (the cell
+## in room pixels times GOODS_DENSITY).
 static func cell_rect(cell: int) -> Rect2:
-    return Rect2((cell % COLUMNS) * CELL.x, (cell / COLUMNS) * CELL.y, CELL.x, CELL.y)
+    var d := GOODS_DENSITY
+    return Rect2((cell % COLUMNS) * CELL.x * d, (cell / COLUMNS) * CELL.y * d, CELL.x * d, CELL.y * d)

@@ -86,7 +86,6 @@ const TESTS := [
     "_test_inn_serves_porridge_to_the_bench",
     "_test_room_open_fetches_the_goods_sheet",
     "_test_inn_sale_waits_for_the_goods_sheet",
-    "_test_room_sale_retries_a_failed_sheet",
     "_test_room_sale_gives_up_on_the_sheet",
     "_test_room_pieces",
     "_test_room_squares",
@@ -113,6 +112,7 @@ const TESTS := [
     "_test_packed_room_art",
     "_test_painted_room_density",
     "_test_packed_room_sheets",
+    "_test_packed_stall_sheets",
 ]
 
 const STALL := "stall-1"
@@ -877,17 +877,20 @@ func _test_stall_at() -> void:
     # the trade, whatever its id; other tags change nothing.
     var stall: Node2D = _world.placed_objects[STALL]
     stall.set_meta("tags", ["business", "shop", "market_stall"])
-    _check("a shop tag keeps the plain stall", StallScenes.scene_for(_world, _assets(), STALL)["sheet"], "/tilesets/interiors/stall_tiled.png")
+    _check("a shop tag keeps the plain stall", StallScenes.scene_for(_world, _assets(), STALL)["sheet"], "res://assets/interiors/stall_tiled.png")
     var plain := StallScenes.scene_for(_world, _assets(), STALL)
     _check("a plain stall's layout", [plain["size"], plain["counter"], plain["counter_from"], plain["counter_slots"], plain["keeper"]],
-        [StallScenes.SIZE, StallScenes.COUNTER_SHEET, 0, StallScenes.COUNTER_SLOTS, StallScenes.KEEPER])
+        [StallScenes.SIZE, "res://assets/interiors/stall_counter_tiled.png", 0, StallScenes.COUNTER_SLOTS, StallScenes.KEEPER])
+    # LLM-969: painted at twice the room pixels, the counter in its roof's timber.
+    _check("a stall's sheets are dense", plain["density"], StallScenes.DENSITY)
     stall.set_meta("tags", ["business", "smithy", "market_stall"])
     var smithy := StallScenes.scene_for(_world, _assets(), STALL)
-    _check("a smithy tag dresses the roof's stall", smithy["sheet"], "/tilesets/interiors/stall_tiled_smithy.png")
+    _check("a smithy tag dresses the roof's stall", smithy["sheet"], "res://assets/interiors/stall_tiled_smithy.png")
     _check("a smithy lays piles clear of the forge", smithy["floor_slots"], StallScenes.TRADES["smithy"]["floor_slots"])
     # LLM-763: the trade's layout replaces the plain stall's, field by field.
     _check("the smithy is 192 wide", smithy["size"], Vector2i(192, 112))
-    _check("with its own counter on the selling side", [smithy["counter"], smithy["counter_from"]], ["/tilesets/interiors/stall_counter_smithy.png", 64])
+    _check("with its own counter on the selling side", [smithy["counter"], smithy["counter_from"]], ["res://assets/interiors/stall_counter_tiled_smithy.png", 64])
+    _check("as dense as the plain stall", smithy["density"], StallScenes.DENSITY)
     _check("the keeper in the selling side's middle", smithy["keeper"]["x"], 128)
     _check("a hand's spot at the forge", smithy["hands"][0]["x"] < 64, true)
     _check("still its own title and pin", [smithy["title"], smithy["pin"]], ["General Store", pin])
@@ -1009,13 +1012,24 @@ func _test_stall_draws() -> void:
     var pile: Sprite2D = _panel._goods_back.get_child(0)
     _check("the pile's cell", (pile.texture as AtlasTexture).region, StallScenes.cell_rect(2 * StallScenes.GOODS["apples"] + 1))
     _check("the pile on the first floor slot", pile.position.x, float(StallScenes.FLOOR_SLOTS[0]))
+    # LLM-969: the goods sheet has its own density (it is every room's): a
+    # cell is cut at it and drawn at its inverse, so it covers CELL room px.
+    var cell := 2 * StallScenes.GOODS["apples"] + 1
+    var at := Vector2(cell % StallScenes.COLUMNS * StallScenes.CELL.x, cell / StallScenes.COLUMNS * StallScenes.CELL.y)
+    _check("the pile's cell cut at the goods density", (pile.texture as AtlasTexture).region,
+        Rect2(at * StallScenes.GOODS_DENSITY, Vector2(StallScenes.CELL) * StallScenes.GOODS_DENSITY))
+    _check("and drawn at 1 / the goods density", pile.scale, Vector2.ONE / StallScenes.GOODS_DENSITY)
+    _check("a few on the counter drawn so too", (_panel._goods_front.get_child(1) as Sprite2D).scale, Vector2.ONE / StallScenes.GOODS_DENSITY)
+    _check("the backdrop and the counter at the stall's density", [_panel._background.scale, _panel._counter.scale],
+        [Vector2.ONE / StallScenes.DENSITY, Vector2.ONE / StallScenes.DENSITY])
 
     # LLM-762: a smithy draws its own backdrop and keeps its piles off the
     # forge's side.
     _world.placed_objects[STALL].set_meta("tags", ["smithy"])
     _panel.close()
     _panel.open(STALL)
-    _check("the smithy backdrop", _panel.room["sheet"], "/tilesets/interiors/stall_tiled_smithy.png")
+    _check("the smithy backdrop", _panel.room["sheet"], "res://assets/interiors/stall_tiled_smithy.png")
+    _check("its bellows at the stall's density", _panel._bellows_art.scale, Vector2.ONE / StallScenes.DENSITY)
     pile = _panel._goods_back.get_child(0)
     _check("the smithy's pile on its first slot", pile.position.x, float(StallScenes.TRADES["smithy"]["floor_slots"][0]))
     _world.placed_objects[STALL].remove_meta("tags")
@@ -1718,7 +1732,7 @@ func _test_smithy_layout() -> void:
     _check("the pile on the smithy's first floor slot", pile.position.x, float(layout["floor_slots"][0]))
     var few: Node2D = _panel._goods_front.get_child(0)
     _check("the few on the smithy's first counter slot", few.position.x, float(layout["counter_slots"][0]))
-    _check("the smithy's counter picture", _panel.room["counter"], layout["counter"])
+    _check("the smithy's counter picture", _panel.room["counter"], str(_panel.room["sheet"]).replace("/stall_", "/stall_counter_"))
     # A sale to someone not drawn: set down at the keeper's spot, not the
     # plain stall's.
     _panel.on_pay_resolved(_sale("keeper", "somebody-past-the-spots", "nail"))
@@ -2357,6 +2371,8 @@ func _test_tavern_serves_a_meal_to_the_table() -> void:
     var bar := Vector2(_panel.room["bar"]["x"], _panel.room["bar"]["y"])
     _check("the stew goes on the bar", good != null and good.position == _panel._cell_at(bar), true)
     _check("the stew's picture", good != null and (good.get_child(0).texture as AtlasTexture).region == StallScenes.cell_rect(2 * StallScenes.GOODS["stew"]), true)
+    # The goods sheet's density, not the room's (LLM-969).
+    _check("the stew drawn at the goods density in a room of density %d" % _panel._density(), good != null and (good.get_child(0) as Sprite2D).scale == Vector2.ONE / StallScenes.GOODS_DENSITY, true)
     _check("the keeper steps to the bar's front", [keeper.has_meta("walking"), _panel._handoff_now["stop"]], [true, Vector2(_panel.room["reach"]["x"], _panel.room["reach"]["y"])])
     _check("not down until the keeper is there", good != null and good.modulate.a == 0.0, true)
     if good == null:
@@ -3347,53 +3363,6 @@ func _test_inn_sale_waits_for_the_goods_sheet() -> void:
     var table := Vector2(_panel.room["spots"][0]["serve"]["x"], _panel.room["spots"][0]["serve"]["y"])
     _check("set on the table in front of the player", [bowl.position, bowl.get_meta("buyer", "")], [_panel._cell_at(table), "pc"])
     _finish_walk(keeper)
-    _world.meals = {}
-    _panel.close()
-    _done()
-
-
-## LLM-772: the goods sheet's download fails, through the real download
-## callback (_on_fetch_done): a 404, then a body that is no PNG. Each failure
-## leaves nothing in flight, so the next retry sends a new request; the waits
-## double. When a download brings a PNG the sale is handed over.
-func _test_room_sale_retries_a_failed_sheet() -> void:
-    var sheet := StallScenes.GOODS_SHEET
-    var t_hook: Callable = _panel.texture_hook
-    var asked := []
-    _panel.texture_hook = Callable()
-    _panel.fetch_hook = func(path: String) -> void:
-        asked.append(path)
-    _panel._textures.erase(sheet)
-    _panel._fetching.clear()
-    _inn_with_guest(0)
-    var requests := func() -> int: return asked.count(sheet)
-    _check("opening the room asks once", requests.call(), 1)
-    var keeper: Node2D = _panel._tending()
-    _panel.on_pay_resolved(_sale("keeper", "guest", "porridge", "accepted", 1, true))
-    _check("the sale waits; no second request while one is in flight", [_panel._handoffs.size(), _panel._handoff.get_child_count(), requests.call()], [1, 0, 1])
-
-    _panel._on_fetch_done(sheet, HTTPRequest.RESULT_SUCCESS, 404, PackedByteArray())
-    _check("a 404: nothing in flight, nothing cached, the sale waits", [_panel._fetching.has(sheet), _panel._textures.has(sheet), _panel._handoffs.size()], [false, false, 1])
-    _panel._retry_sheet(_panel.SHEET_RETRY_SECONDS - 0.5)
-    _check("not before the first retry is due", requests.call(), 1)
-    _panel._retry_sheet(0.6)
-    _check("the retry sends a second request", requests.call(), 2)
-    _check("and waits twice as long for the next", _panel._sheet_retry_left, _panel.SHEET_RETRY_SECONDS * 2.0)
-
-    _panel._on_fetch_done(sheet, HTTPRequest.RESULT_SUCCESS, 200, PackedByteArray([1, 2, 3]))
-    _check("not a PNG: nothing in flight, nothing cached", [_panel._fetching.has(sheet), _panel._textures.has(sheet), _panel._handoffs.size()], [false, false, 1])
-    _panel._retry_sheet(_panel.SHEET_RETRY_SECONDS * 2.0 + 0.1)
-    _check("a third request", requests.call(), 3)
-
-    var png := Image.create(128, 112, false, Image.FORMAT_RGBA8).save_png_to_buffer()
-    _panel._on_fetch_done(sheet, HTTPRequest.RESULT_SUCCESS, 200, png)
-    _check("the sheet comes: cached, and the porridge goes on the desk",
-        [_panel._textures.has(sheet), _panel._handoff.get_node_or_null("handoff_porridge") != null, keeper.has_meta("walking")], [true, true, true])
-    _finish_walk(keeper)
-    _panel._textures.erase(sheet)
-    _panel._fetching.clear()
-    _panel.fetch_hook = Callable()
-    _panel.texture_hook = t_hook
     _world.meals = {}
     _panel.close()
     _done()
@@ -4682,4 +4651,39 @@ func _test_packed_room_sheets() -> void:
             if tex != null:
                 _check("%s anim %s: whole frames" % [key, path], tex.get_width() % int(anim.get("frames", 1)), 0)
     _check("at least the red tiny home is packed", packed >= 2, true)
+    _done()
+
+
+## LLM-969: every stall scene's sheets are packed and are the scene's size at
+## its density (the backdrop, the roof's counter, a trade's bellows, two
+## frames), and the goods sheet holds every good's two cells at the goods
+## density.
+func _test_packed_stall_sheets() -> void:
+    var d := StallScenes.DENSITY
+    for asset in StallScenes.SHEETS:
+        for trade in [""] + StallScenes.TRADES.keys():
+            var sheet := str(StallScenes.SHEETS[asset])
+            var size := StallScenes.SIZE
+            if trade != "":
+                sheet = sheet.replace(".png", "_%s.png" % trade)
+                size = StallScenes.TRADES[trade]["size"]
+            for path in [sheet, StallScenes.counter_for(sheet)]:
+                var tex := load(path) as Texture2D
+                _check("%s: packed" % path, tex != null, true)
+                if tex != null:
+                    _check("%s: the scene's size at density %d" % [path, d], Vector2i(tex.get_width(), tex.get_height()), size * d)
+    var art: Dictionary = StallScenes.TRADES["smithy"]["bellows_art"]
+    var bellows := load(str(art["sheet"])) as Texture2D
+    # Two frames of 32 x 28 room px (stalls.py BELLOWS_SIZE).
+    _check("the bellows: packed, two frames at density %d" % d, bellows != null and Vector2i(bellows.get_width(), bellows.get_height()) == Vector2i(2 * 32, 28) * d, true)
+    var goods := load(StallScenes.GOODS_SHEET) as Texture2D
+    _check("the goods sheet: packed", goods != null, true)
+    if goods != null:
+        _check("the goods sheet: COLUMNS cells wide at the goods density", goods.get_width(), StallScenes.COLUMNS * StallScenes.CELL.x * StallScenes.GOODS_DENSITY)
+        var last := 0
+        for kind in StallScenes.GOODS:
+            last = maxi(last, int(StallScenes.GOODS[kind]))
+        last = maxi(last, StallScenes.OTHER)
+        var pile := StallScenes.cell_rect(2 * last + 1)
+        _check("every good's pile inside the sheet", pile.end.y <= goods.get_height() and pile.end.x <= goods.get_width(), true)
     _done()

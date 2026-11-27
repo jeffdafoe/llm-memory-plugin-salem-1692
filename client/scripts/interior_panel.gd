@@ -2167,6 +2167,7 @@ func _draw_goods() -> void:
             var spr := Sprite2D.new()
             spr.centered = false
             spr.texture = cell
+            spr.scale = Vector2.ONE / StallScenes.GOODS_DENSITY
             spr.position = Vector2(slot["at"] + StallScenes.FEW_STEP * i)
             spr.name = "%s_%d" % [slot["item"], i]
             spr.set_meta("item", str(slot["item"]))
@@ -2357,6 +2358,7 @@ func _good_picture(item: String, qty: int) -> Node2D:
         var spr := Sprite2D.new()
         spr.centered = false
         spr.texture = cell
+        spr.scale = Vector2.ONE / StallScenes.GOODS_DENSITY
         spr.position = Vector2(StallScenes.FEW_STEP * i)
         good.add_child(spr)
     return good
