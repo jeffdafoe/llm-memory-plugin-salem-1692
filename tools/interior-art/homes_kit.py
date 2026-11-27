@@ -476,60 +476,87 @@ def soft_patch(room, pts, col, strength, blur=1.6):
     room.lay.paste(Image.new("RGBA", room.lay.size, col), (0, 0), m)
 
 
-def smooth(pts, rnd, wave=0.5, steps=4):
-    """A closed outline through pts, each side split into steps with the
-    inner points nudged a little, as loose cloth's edge."""
-    out = []
-    for i in range(len(pts)):
-        a, b = pts[i], pts[(i + 1) % len(pts)]
-        for k in range(steps):
-            p = lerp(a, b, k / steps)
-            out.append((p[0] + (rnd.uniform(-wave, wave) if k else 0), p[1] + (rnd.uniform(-wave, wave) if k else 0)))
-    return out
+def soft_quad(tl, tr, br, bl, rnd, cut=1.4, wave=0.25, steps=5):
+    """A four-sided outline with its corners rounded off (cut room px) and
+    its sides a little uneven: a stuffed tick or a roll of cloth seen from
+    above."""
+    corners = [tl, tr, br, bl]
+    pts = []
+    for i in range(4):
+        a, b = corners[i], corners[(i + 1) % 4]
+        n = math.hypot(b[0] - a[0], b[1] - a[1]) or 1.0
+        t0, t1 = cut / n, 1 - cut / n
+        for k in range(steps + 1):
+            p = lerp(a, b, t0 + (t1 - t0) * k / steps)
+            j = rnd.uniform(-wave, wave) if 0 < k < steps else 0.0
+            pts.append((p[0] + j, p[1] + j))
+    return pts
 
 
-def throw(room, x0, top, x1, foot, cols, stripe, rnd, lean=1.0):
-    """A wool blanket over a sleeper on a bed on the floor, taking the
-    body's shape: square across the top (turned down to show its paler
-    underside), widest over the shoulders, narrowing over the legs to the
-    feet, the hem loose and rounded, the whole a little askew (lean, room px
-    the foot sits right of the head). The body's mound is one tone lighter
-    down the middle and left (light from the upper left), its right side and
-    foot one tone darker; a stripe woven across near the foot; a wrinkle at
-    the hips and the knees."""
-    w, h = x1 - x0, foot - top
-    X = lambda fx, fy: x0 + w * fx + lean * fy
-    Y = lambda fy: top + h * fy
-    outline = [(X(0.02, 0), Y(0)), (X(0.97, 0), Y(0.02)), (X(1.0, 0.18), Y(0.18)), (X(0.97, 0.45), Y(0.45)),
-               (X(0.86, 0.78), Y(0.78)), (X(0.74, 0.97), Y(0.98)), (X(0.5, 1.0), Y(1.0)), (X(0.26, 0.97), Y(0.96)),
-               (X(0.13, 0.78), Y(0.76)), (X(0.03, 0.45), Y(0.45)), (X(0.0, 0.18), Y(0.18))]
-    pts = smooth(outline, rnd)
-    room.poly([(px + 0.4, py + 0.8) for px, py in pts], ramp(cols, 0.18))
-    room.poly(pts, ramp(cols, 0.44))
-    # The mound: the body's top, one tone lighter, left of the middle.
-    mound = smooth([(X(0.14, 0.1), Y(0.1)), (X(0.62, 0.1), Y(0.1)), (X(0.68, 0.4), Y(0.4)), (X(0.56, 0.8), Y(0.8)),
-                    (X(0.38, 0.9), Y(0.9)), (X(0.22, 0.78), Y(0.78)), (X(0.12, 0.4), Y(0.4))], rnd, 0.4)
-    room.poly(mound, ramp(cols, 0.6))
-    room.speckle(x0, top, x1 + lean, foot, w * h / 7, cols, (0.38, 0.52, 0.66), rnd, (0.25, 0.5))
-    # Where the blanket falls away at the right and over the feet.
-    room.poly([(X(0.97, 0.45), Y(0.45)), (X(1.0, 0.18), Y(0.18)), (X(0.88, 0.2), Y(0.2)), (X(0.84, 0.5), Y(0.5)),
-               (X(0.72, 0.82), Y(0.82)), (X(0.86, 0.78), Y(0.78))], ramp(cols, 0.3))
-    # Wrinkles across at the hips and the knees, each a shade under a lit
-    # crest, bowed toward the foot.
-    for fy in (0.5, 0.7):
-        a, b = (X(0.12, fy), Y(fy)), (X(0.8, fy), Y(fy + 0.02))
-        mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 + 1.2)
-        room.line([a, mid, b], ramp(cols, 0.28), 0.5)
-        room.line([(a[0], a[1] - 0.6), (mid[0], mid[1] - 0.6), (b[0], b[1] - 0.6)], ramp(cols, 0.7), 0.3)
-    # The stripe near the foot, bowed over the legs.
-    fy = 0.84
-    a, b = (X(0.15, fy), Y(fy)), (X(0.84, fy), Y(fy + 0.01))
-    room.line([a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 + 1.0), b], ramp(stripe, 0.42), 1.0)
-    # The turned-down top: the underside, paler, and the shadow under its
-    # fold.
-    room.poly([(X(0.02, 0), Y(0)), (X(0.97, 0), Y(0.02)), (X(0.98, 0.06), Y(0.02) + 2.0), (X(0.02, 0.06), Y(0) + 2.0)],
-              ramp(cols, 0.78))
-    room.line([(X(0.02, 0.06), Y(0) + 2.0), (X(0.98, 0.06), Y(0.02) + 2.0)], ramp(cols, 0.14), 0.45)
+def lying(room, x, y, w, h, top, near, face, head_in, foot_in, cols, rnd, lit=0.62, base=0.5):
+    """Something stuffed lying on the floor in the rooms' slanted view: its
+    top from y + top (the head, far end) to y + near (the foot, near end),
+    narrower at the head (head_in room px in from each side) than at the
+    foot (foot_in); a low front face face room px tall under its near edge,
+    in shade; the top lit toward the head and along the left, its right side
+    in shade. Returns the top's corners (tl, tr, br, bl)."""
+    tl, tr = (x + head_in, y + top), (x + w - head_in, y + top)
+    br, bl = (x + w - foot_in, y + near), (x + foot_in, y + near)
+    front = soft_quad((bl[0] - 0.2, bl[1] - 1.0), (br[0] + 0.2, br[1] - 1.0), (br[0] - 0.4, br[1] + face),
+                      (bl[0] + 0.4, bl[1] + face), rnd, cut=1.0)
+    room.poly(front, ramp(cols, base - 0.26))
+    room.poly(soft_quad((bl[0] + 1, bl[1] + face - 0.6), (br[0] - 1, br[1] + face - 0.6), (br[0] - 1.2, br[1] + face),
+                        (bl[0] + 1.2, bl[1] + face), rnd, cut=0.3, wave=0.1), ramp(cols, base - 0.36))
+    room.poly(soft_quad(tl, tr, br, bl, rnd), ramp(cols, base))
+    # Lit toward the head: the far third one tone up, its edge bowed.
+    a, b = lerp(tl, bl, 0.36), lerp(tr, br, 0.36)
+    room.poly(soft_quad(tl, tr, (b[0] - 0.4, b[1]), (a[0] + 0.4, a[1] + 0.8), rnd, cut=1.4, wave=0.4), ramp(cols, lit))
+    # The right side turning away from the light.
+    room.poly([(tr[0] - 1.2, tr[1] + 1.0), (tr[0] - 0.1, tr[1] + 1.2), (br[0] - 0.1, br[1] - 1.0), (br[0] - 1.6, br[1] - 1.2)],
+              ramp(cols, base - 0.14))
+    room.poly([(tl[0] + 0.2, tl[1] + 1.2), (tl[0] + 1.0, tl[1] + 1.0), (bl[0] + 1.2, bl[1] - 1.2), (bl[0] + 0.2, bl[1] - 1.0)],
+              ramp(cols, lit + 0.12))
+    return tl, tr, br, bl
+
+
+def flat_blanket(room, tl, tr, br, bl, cols, stripe, rnd, face=1.8):
+    """A wool blanket lying over a bed on the floor, inside the quad (tl, tr
+    at the head, br, bl at the foot, narrower at the head): its top turned
+    down to show the paler underside; lit toward the head and darker toward
+    the foot in bands running across it, soft folds across at the hips and
+    knees bowed toward the foot, a stripe woven across near the foot, its
+    hem hanging a little over the bed's front face."""
+    room.poly(soft_quad((bl[0] - 0.3, bl[1] - 0.6), (br[0] + 0.3, br[1] - 0.6), (br[0] - 0.2, br[1] + face),
+                        (bl[0] + 0.2, bl[1] + face - 0.4), rnd, cut=0.8, wave=0.3), ramp(cols, 0.2))
+    room.poly(soft_quad(tl, tr, br, bl, rnd, cut=1.0, wave=0.3), ramp(cols, 0.44))
+    for f0, tone in ((0.0, 0.62), (0.3, 0.52)):
+        a0, b0 = lerp(tl, bl, f0), lerp(tr, br, f0)
+        a1, b1 = lerp(tl, bl, f0 + 0.32), lerp(tr, br, f0 + 0.32)
+        mid = ((a1[0] + b1[0]) / 2, (a1[1] + b1[1]) / 2 + 1.0)
+        room.poly([(a0[0] + 0.3, a0[1]), (b0[0] - 0.3, b0[1]), (b1[0] - 0.3, b1[1]), mid, (a1[0] + 0.3, a1[1])], ramp(cols, tone))
+    room.speckle(min(tl[0], bl[0]), tl[1], max(tr[0], br[0]), br[1], (br[0] - bl[0]) * (bl[1] - tl[1]) / 7, cols,
+                 (0.36, 0.5, 0.64), rnd, (0.25, 0.5))
+    for f in (0.62, 0.8):
+        a, b = lerp(tl, bl, f), lerp(tr, br, f)
+        mid = ((a[0] + b[0]) / 2 + rnd.uniform(-1, 1), (a[1] + b[1]) / 2 + 1.1)
+        room.line([(a[0] + 0.4, a[1]), mid, (b[0] - 0.4, b[1])], ramp(cols, 0.24), 0.5)
+        room.line([(a[0] + 0.4, a[1] - 0.6), (mid[0], mid[1] - 0.6), (b[0] - 0.4, b[1] - 0.6)], ramp(cols, 0.66), 0.3)
+    a, b = lerp(tl, bl, 0.9), lerp(tr, br, 0.9)
+    room.line([(a[0] + 0.3, a[1]), ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 + 0.8), (b[0] - 0.3, b[1])], ramp(stripe, 0.42), 0.9)
+    # The turned-down top, and the shadow under its fold.
+    a, b = lerp(tl, bl, 0.08), lerp(tr, br, 0.08)
+    room.poly([tl, tr, b, a], ramp(cols, 0.8))
+    room.line([a, b], ramp(cols, 0.14), 0.45)
+    room.rect(tl[0] + 0.4, tl[1], tr[0] - 0.4, tl[1] + 0.4, ramp(cols, 0.92))
+
+
+def lying_shadow(room, x, y, w, h, top, near, face, head_in, foot_in, strength=170):
+    """A bed on the floor's shadow on the room sheet: its outline cast down
+    and to the right, so it shows along the right side and past the foot
+    (light from the upper left)."""
+    pts = [(x + head_in + 1.6, y + top + 1.4), (x + w - head_in + 1.6, y + top + 1.4), (x + w - foot_in + 1.8, y + near + face + 1.4),
+           (x + foot_in + 1.4, y + near + face + 1.4)]
+    room.sd.polygon([(px * C.S, py * C.S) for px, py in pts], fill=strength)
 
 
 def clamp(p, box):
@@ -562,37 +589,43 @@ def straw_wisps(room, x0, y0, x1, y1, n, rnd, out=2.0, box=None):
         room.line([(px - dx * 0.4, py - dy * 0.4), end], ramp(C.STRAW, rnd.choice((0.55, 0.75, 0.9))), 0.3)
 
 
+# The straw pallet's shape: its top from 3 to 44.4 room px down a 48 px rect,
+# 4.4 px in from each side at the head and 1.4 at the foot, a 2.4 px face.
+PALLET = dict(top=3.0, near=44.4, face=2.4, head_in=4.4, foot_in=1.4)
+
+
 def straw_pallet(room, x, y, w, h, cover, stripe, rnd):
     """A bed on the floor, no frame: a linen tick stuffed with straw lying
-    low on the boards, its edges soft and lumpy, sagging where the sleeper
-    lies, straw poking out along its seams and strewn round it; a linen
-    bolster at the head; a wool blanket thrown over it a little askew from
-    12 px below the top (the room's covers rect), taking the sleeper's
-    shape, its top turned down. Seen from above at a slant like the
-    beds."""
+    low on the boards, seen like the beds from above at a slant, so its far
+    (head) end is narrower than its near (foot) end, a low front face shows
+    its height in shade, and its top is lit toward the head; straw poking
+    out along its seams and strewn round it; a linen bolster across the
+    head; a wool blanket over it from 12 px below the top (the room's covers
+    rect), its top turned down, its hem over the front face. Its shadow on
+    the floor is on the room sheet (lying_shadow, PALLET)."""
+    p = PALLET
     box = (x + 0.3, y + 0.3, x + w - 0.3, y + h - 0.3)
-    straw(room, (x + 0.5, y + h - 4.5, x + w - 0.5, y + h - 0.6), 26, rnd)
-    straw(room, (x + 0.4, y + 1.0, x + 2.6, y + h - 1.0), 12, rnd)
-    straw(room, (x + w - 2.6, y + 1.0, x + w - 0.4, y + h - 1.0), 12, rnd)
-    tick = lumpy(x + 1.6, y + 2.4, x + w - 1.6, y + h - 2.2, rnd, power=4.0)
-    # The tick's low side, in shade, under its top.
-    room.poly([(px + 0.3, py + 1.0) for px, py in tick], ramp(C.LINEN, 0.25))
-    room.poly(tick, ramp(C.LINEN, 0.5))
-    k = x + 4.0
-    while k < x + w - 3.5:
-        room.line([(k, y + 3.4), (k + rnd.uniform(-0.3, 0.3), y + h - 3.6)], ramp(C.LINEN, 0.42), 0.4)
-        k += 3.4
-    soft_shade(room, tick, 1.8, 120, 80)
-    straw_wisps(room, x + 2.2, y + 3.0, x + w - 2.2, y + h - 2.8, int(w + h), rnd, 2.2, box=box)
-    # The sag where the sleeper lies, down the middle of the tick.
-    soft_patch(room, lumpy(x + 7, y + 14, x + w - 7, y + h - 9, rnd), (40, 28, 18, 255), 70, 2.2)
-    # The bolster: a soft lumpy roll across the head.
-    pillow = lumpy(x + 3.6, y + 3.6, x + w - 3.6, y + 11.2, rnd, power=2.4, lump=0.4)
+    straw(room, (x + 0.5, y + h - 3.0, x + w - 0.5, y + h - 0.5), 18, rnd)
+    straw(room, (x + 0.4, y + 1.0, x + 4.0, y + h - 4.0), 10, rnd)
+    straw(room, (x + w - 4.0, y + 1.0, x + w - 0.4, y + h - 4.0), 10, rnd)
+    tl, tr, br, bl = lying(room, x, y, w, h, p["top"], p["near"], p["face"], p["head_in"], p["foot_in"], C.LINEN, rnd,
+                           lit=0.66, base=0.54)
+    # Faint ticking stripes along the bag, converging toward the head.
+    for f in (0.2, 0.4, 0.6, 0.8):
+        room.line([lerp(tl, tr, f), lerp(bl, br, f)], ramp(C.LINEN, 0.46), 0.3)
+    straw_wisps(room, tl[0] - 0.4, tl[1], br[0] + 0.4, br[1] + p["face"], int(w + h), rnd, 1.8, box=box)
+    # The bolster across the head: a soft roll, lit on top.
+    bt = y + p["top"] + 0.8
+    pillow = soft_quad((tl[0] + 0.8, bt), (tr[0] - 0.8, bt), (tr[0] - 0.4, bt + 6.0), (tl[0] + 0.4, bt + 6.0), rnd, cut=2.2)
     room.poly(pillow, ramp(C.LINEN, 0.72))
-    soft_shade(room, pillow, 1.2, 110, 90)
-    # The blanket over the sleeper, narrower than the tick, so the ticking
-    # shows at both sides and the foot.
-    throw(room, x + 3.6, y + 12.0, x + w - 4.6, y + h - 6.0, cover, stripe, rnd)
+    room.poly(soft_quad((tl[0] + 2.0, bt + 0.6), (tr[0] - 3.0, bt + 0.6), (tr[0] - 3.4, bt + 2.6), (tl[0] + 1.8, bt + 2.6),
+                        rnd, cut=1.0), ramp(C.LINEN, 0.95))
+    room.line([(tl[0] + 1.4, bt + 5.8), (tr[0] - 1.4, bt + 5.8)], ramp(C.LINEN, 0.36), 0.5)
+    # The blanket.
+    yt, yn = y + 12.0, y + p["near"] - 0.6
+    edge = lambda yy, side: lerp(bl if side < 0 else br, tl if side < 0 else tr, (y + p["near"] - yy) / (p["near"] - p["top"]))
+    flat_blanket(room, (edge(yt, -1)[0] + 0.8, yt), (edge(yt, 1)[0] - 0.8, yt + 0.4), (edge(yn, 1)[0] - 0.6, yn),
+                 (edge(yn, -1)[0] + 0.6, yn), cover, stripe, rnd)
 
 
 def grain_sack(room, x, y, w, h, rnd, open_=True):
@@ -770,36 +803,44 @@ def pole_hook(room, px, y, reach):
     room.line([(px, y - 0.2), (px + reach, y - 0.6)], ramp(C.IRON, 0.6), 0.25)
 
 
+# The tent bedroll's shape in its 44 px rect.
+BEDROLL = dict(top=2.6, near=40.8, face=2.4, head_in=4.4, foot_in=1.6)
+
+
 def bedroll(room, x, y, w, h, rnd):
-    """The camp bed laid along the tent's left wall, no frame: straw
-    strewn on the ground, a dark wool bedroll unrolled on it with soft lumpy
-    edges and the sleeper's hollow, a red coat rolled up at the head for a
-    pillow (its rolled end showing the cloth's spiral, a cuff with a pewter
-    button), a grey blanket thrown over it a little askew from 12 px below
-    the top (the room's covers rect), taking the sleeper's shape, its top
-    turned down."""
+    """The camp bed laid along the tent's left wall, no frame, seen like the
+    beds from above at a slant: straw strewn on the ground, a dark wool
+    bedroll unrolled on it, narrower at its far (head) end than its near
+    (foot) end, a low front face in shade, its top lit toward the head; a
+    red coat rolled up across the head for a pillow (its rolled end showing
+    the cloth's spiral, a cuff with a pewter button); a grey blanket over it
+    from 12 px below the top (the room's covers rect), its top turned down,
+    its hem over the front face. Its shadow on the ground is on the room
+    sheet (lying_shadow, BEDROLL)."""
+    p = BEDROLL
     box = (x + 0.3, y + 0.3, x + w - 0.3, y + h - 0.3)
-    straw(room, (x + 0.5, y + 0.8, x + w - 0.5, y + h - 0.5), 40, rnd)
-    roll = lumpy(x + 1.4, y + 2.0, x + w - 1.6, y + h - 2.2, rnd, power=4.0, lump=0.7)
-    room.poly([(px + 0.3, py + 0.9) for px, py in roll], ramp(LEATHER, 0.1))
-    room.poly(roll, ramp(LEATHER, 0.45))
-    room.speckle(x + 2, y + 3, x + w - 2, y + h - 2, w * h / 8, LEATHER, (0.35, 0.55), rnd, (0.25, 0.5))
-    soft_shade(room, roll, 1.6, 120, 70)
-    straw_wisps(room, x + 2.0, y + 3.0, x + w - 2.0, y + h - 2.0, 14, rnd, 1.8, box=box)
-    soft_patch(room, lumpy(x + 7, y + 14, x + w - 7, y + h - 6, rnd), (20, 16, 12, 255), 60, 2.2)
-    # The rolled coat: a soft cylinder lying across, its rolled end at the
-    # left, a cuff and a pewter button at the right.
-    coat = lumpy(x + 2.8, y + 3.2, x + w - 2.6, y + 11.2, rnd, power=2.6, lump=0.35)
-    room.poly(coat, ramp(C.MADDER, 0.48))
-    soft_shade(room, coat, 1.2, 110, 80)
-    c0, ct, cb = x + 2.8, y + 3.4, y + 11.0
-    room.ellipse(c0, ct, c0 + 5.4, cb, ramp(C.MADDER, 0.6))
-    room.ellipse(c0 + 1.0, ct + 1.2, c0 + 4.4, cb - 1.2, ramp(C.MADDER, 0.3))
-    room.ellipse(c0 + 1.9, ct + 2.4, c0 + 3.5, cb - 2.4, ramp(C.MADDER, 0.6))
-    room.rect(x + w - 8.4, y + 5.0, x + w - 4.6, y + 9.4, ramp(C.MADDER, 0.3))
-    room.rect(x + w - 7.8, y + 6.4, x + w - 6.6, y + 7.6, ramp(C.PEWTER, 0.85))
-    # The blanket, askew, its foot corner turned back.
-    throw(room, x + 3.6, y + 12.2, x + w - 4.6, y + h - 4.2, WOOL, C.MADDER, rnd)
+    straw(room, (x + 0.5, y + 0.8, x + w - 0.5, y + h - 0.5), 34, rnd)
+    tl, tr, br, bl = lying(room, x, y, w, h, p["top"], p["near"], p["face"], p["head_in"], p["foot_in"], LEATHER, rnd,
+                           lit=0.62, base=0.46)
+    straw_wisps(room, tl[0] - 0.4, tl[1], br[0] + 0.4, br[1] + p["face"], 16, rnd, 1.6, box=box)
+    # The rolled coat across the head: a soft cylinder, its rolled end at
+    # the left, a cuff and a pewter button at the right.
+    ct = y + p["top"] + 0.6
+    coat = soft_quad((tl[0] + 0.2, ct), (tr[0] - 0.2, ct), (tr[0] + 0.2, ct + 7.6), (tl[0] - 0.2, ct + 7.6), rnd, cut=2.6)
+    room.poly(coat, ramp(C.MADDER, 0.46))
+    room.poly(soft_quad((tl[0] + 4.6, ct + 0.8), (tr[0] - 3.0, ct + 0.8), (tr[0] - 3.2, ct + 3.0), (tl[0] + 4.4, ct + 3.0),
+                        rnd, cut=1.0), ramp(C.MADDER, 0.72))
+    room.line([(tl[0] + 4.6, ct + 6.8), (tr[0] - 1.6, ct + 6.8)], ramp(C.MADDER, 0.2), 0.5)
+    c0 = tl[0] - 0.2
+    room.ellipse(c0, ct + 0.2, c0 + 5.0, ct + 7.4, ramp(C.MADDER, 0.6))
+    room.ellipse(c0 + 0.9, ct + 1.3, c0 + 4.1, ct + 6.3, ramp(C.MADDER, 0.3))
+    room.ellipse(c0 + 1.8, ct + 2.5, c0 + 3.2, ct + 5.1, ramp(C.MADDER, 0.6))
+    room.rect(tr[0] - 5.6, ct + 1.6, tr[0] - 2.0, ct + 6.0, ramp(C.MADDER, 0.3))
+    room.rect(tr[0] - 5.0, ct + 3.0, tr[0] - 3.8, ct + 4.2, ramp(C.PEWTER, 0.85))
+    yt, yn = y + 12.2, y + p["near"] - 0.6
+    edge = lambda yy, side: lerp(bl if side < 0 else br, tl if side < 0 else tr, (y + p["near"] - yy) / (p["near"] - p["top"]))
+    flat_blanket(room, (edge(yt, -1)[0] + 0.8, yt), (edge(yt, 1)[0] - 0.8, yt + 0.4), (edge(yn, 1)[0] - 0.6, yn),
+                 (edge(yn, -1)[0] + 0.6, yn), WOOL, C.MADDER, rnd)
 
 
 def snapsack(room, x, y, w, h):

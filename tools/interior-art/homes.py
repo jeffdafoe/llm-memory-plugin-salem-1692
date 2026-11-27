@@ -156,6 +156,7 @@ def red_medium_room(seed=971):
     C.shelf(room, 45, 59, 31, rnd, ("bowl", "jug", "plate"))
     C.broom(room, 42, 47, 18)
     shadows(room, "home_red_medium")
+    K.lying_shadow(room, 0, 62, 32, 48, **K.PALLET)
     return C.shrink(room, RED_PALETTE)
 
 
@@ -177,6 +178,7 @@ def red_small_room(seed=973):
     K.onion_string(room, 72, 11, rnd)
     C.broom(room, 66, 47, 18)
     shadows(room, "home_red_small")
+    K.lying_shadow(room, 0, 60, 32, 48, **K.PALLET)
     return C.shrink(room, RED_PALETTE)
 
 
@@ -241,6 +243,7 @@ def tent_room(seed=979):
     room.ellipse(52.6, 51.4, 55, 53.4, C.ramp(K.WOOD, 0.75))
     room.rect(54, 50, 55, 51.4, C.ramp(K.WOOD, 0.3))
     shadows(room, "tent", 160)
+    K.lying_shadow(room, 12, 58, 32, 44, **K.BEDROLL, strength=150)
     return C.shrink(room, K.TENT_PALETTE)
 
 
