@@ -55,8 +55,9 @@ ANCHOR = (DECK_X0 + (DECK_COLS // 2) * TILE + TILE / 2, DECK_Y1 - TILE / 2)
 FOOTPRINT = (DECK_COLS // 2, DECK_COLS // 2, DECK_ROWS - 1, 0)
 
 FASCIA = 4.0               # the south stringer's face, below the deck
-LEG = 9.0                  # how far the bents show below the stringer
-RAIL = 6.0                 # the side rails' height
+LEG = 7.0                  # how far the bents show below the stringer
+RAIL = 5.0                 # the north rail's height
+NEAR_RAIL = 2.6            # the south rail's: low, so a villager in front of it stays clear
 
 
 def rect(d, x0, y0, x1, y1, col):
@@ -69,43 +70,55 @@ def line(d, pts, col, w):
 
 
 def abutment(d, rnd, x0, x1, top, bottom):
-    """A fieldstone abutment under one end of the deck: stones laid in
-    rough courses, lit on top."""
-    y = bottom
-    while y > top:
-        h = rnd.uniform(2.4, 3.4)
-        x = x0 - rnd.uniform(0, 1.5)
+    """A fieldstone abutment under one end of the deck: a compact block of
+    squared stones laid in level courses with staggered joints, its top
+    course flat under the deck, each stone lit along its top edge. It keeps
+    within the deck's end, so it reads as the deck's bearing."""
+    course = 2.3
+    y, row = top, 0
+    while y < bottom - 0.4:
+        h = min(course, bottom - y)
+        x = x0 - (rnd.uniform(0.8, 1.8) if row % 2 else 0)
         while x < x1:
-            w = rnd.uniform(3.0, 5.0)
-            tone = rnd.uniform(0.35, 0.6)
-            d.ellipse((x * P.S, (y - h) * P.S, (x + w) * P.S, y * P.S), fill=B.ramp(STONE, tone))
-            d.ellipse(((x + 0.6) * P.S, (y - h) * P.S, (x + w * 0.6) * P.S, (y - h + 1.0) * P.S),
-                      fill=B.ramp(STONE, tone + 0.25))
-            x += w - 0.4
-        y -= h - 0.5
+            w = rnd.uniform(2.6, 3.6)
+            sx0, sx1 = max(x, x0), min(x + w, x1)
+            if sx1 - sx0 > 0.6:
+                tone = rnd.uniform(0.42, 0.58)
+                rect(d, sx0 + 0.15, y + 0.15, sx1 - 0.15, y + h - 0.1, B.ramp(STONE, tone))
+                line(d, [(sx0 + 0.2, y + 0.35), (sx1 - 0.3, y + 0.35)], B.ramp(STONE, tone + 0.24), 0.3)
+            x += w
+        y += h
+        row += 1
+    # The mortar shadow down its right side, where it turns from the light.
+    line(d, [(x1 - 0.2, top), (x1 - 0.2, bottom)], B.ramp(STONE, 0.22), 0.45)
 
 
 def bent(d, x):
-    """A trestle bent seen end-on below the south stringer: two posts into
-    the water and a diagonal brace."""
+    """A trestle bent seen end-on below the south stringer: two dark posts
+    into the water and a pale diagonal brace from one post's top to the
+    other's foot, so the pair reads as one braced frame."""
     top, foot = DECK_Y1 + FASCIA, DECK_Y1 + FASCIA + LEG
-    for px, tone in ((x - 2.2, 0.42), (x + 2.2, 0.3)):
-        rect(d, px - 0.9, top, px + 0.9, foot, B.ramp(TIMBER, tone))
-        line(d, [(px - 0.9, top), (px - 0.9, foot)], B.ramp(TIMBER, tone + 0.2), 0.3)
-    line(d, [(x - 2.2, top + 1.0), (x + 2.2, foot - 2.0)], B.ramp(TIMBER, 0.36), 0.8)
+    left, right = x - 2.4, x + 2.4
+    for px, tone in ((left, 0.3), (right, 0.22)):
+        rect(d, px - 0.85, top, px + 0.85, foot, B.ramp(TIMBER, tone))
+        line(d, [(px - 0.85, top), (px - 0.85, foot)], B.ramp(TIMBER, tone + 0.16), 0.3)
+    line(d, [(left, top + 0.6), (right, foot - 0.6)], B.ramp(TIMBER, 0.66), 1.0)
+    line(d, [(left, top + 0.15), (right, foot - 1.05)], B.ramp(TIMBER, 0.97), 0.5)
     # Where the posts meet the water: a pale ripple either side.
-    for px in (x - 2.2, x + 2.2):
+    for px in (left, right):
         line(d, [(px - 1.8, foot + 0.2), (px - 0.9, foot - 0.2)], B.ramp(STONE, 0.92), 0.35)
         line(d, [(px + 0.9, foot - 0.2), (px + 1.8, foot + 0.2)], B.ramp(STONE, 0.92), 0.35)
 
 
-def rail(d, y, posts, tone, height):
-    """A post-and-rail side standing on the deck edge at y."""
+def rail(d, y, posts, tone, height, post_width, rail_width):
+    """A post-and-rail side standing on the deck edge at y: square posts,
+    each lit on its left, and one narrow top rail."""
+    half = post_width / 2
     for x in posts:
-        rect(d, x - 0.8, y - height, x + 0.8, y + 0.4, B.ramp(TIMBER, tone - 0.1))
-        line(d, [(x - 0.8, y - height), (x - 0.8, y + 0.4)], B.ramp(TIMBER, tone + 0.15), 0.3)
-    rect(d, DECK_X0 + 0.5, y - height, DECK_X1 - 0.5, y - height + 1.3, B.ramp(TIMBER, tone))
-    line(d, [(DECK_X0 + 0.5, y - height), (DECK_X1 - 0.5, y - height)], B.ramp(TIMBER, tone + 0.22), 0.35)
+        rect(d, x - half, y - height, x + half, y + 0.4, B.ramp(TIMBER, tone - 0.14))
+        line(d, [(x - half, y - height), (x - half, y + 0.4)], B.ramp(TIMBER, tone + 0.12), 0.3)
+    rect(d, DECK_X0 + 0.5, y - height, DECK_X1 - 0.5, y - height + rail_width, B.ramp(TIMBER, tone))
+    line(d, [(DECK_X0 + 0.5, y - height), (DECK_X1 - 0.5, y - height)], B.ramp(TIMBER, tone + 0.2), 0.3)
 
 
 def paint_bridge(seed=968):
@@ -114,17 +127,25 @@ def paint_bridge(seed=968):
     shade = Image.new("L", (P.W, P.H), 0)
     d, sd = ImageDraw.Draw(lay), ImageDraw.Draw(shade)
     rnd = random.Random(seed)
-    # The cast shadow on the water, south-east of the deck.
-    sd.rectangle(((DECK_X0 + 3) * P.S, (DECK_Y1 + FASCIA) * P.S, (DECK_X1 + 2) * P.S,
-                  (DECK_Y1 + FASCIA + LEG + 2.5) * P.S), fill=255)
+    # Small cast shadows where the structure meets the water and the banks,
+    # falling down and right: one beside each bent's feet and each
+    # abutment's foot, the water open between them.
+    foot = DECK_Y1 + FASCIA + LEG
+    bents = [DECK_X0 + k * TILE for k in (1.5, 2.5, 3.5)]
+    for bx in bents:
+        sd.ellipse(((bx - 0.6) * P.S, (foot - 0.5) * P.S, (bx + 3.6) * P.S, (foot + 0.9) * P.S), fill=255)
+    west_x1, east_x0 = DECK_X0 + TILE - 4, DECK_X1 - TILE + 4
+    for ax in (west_x1, DECK_X1):
+        sd.ellipse(((ax - 2.0) * P.S, (foot - 1.0) * P.S, (ax + 3.0) * P.S, (foot + 1.4) * P.S), fill=255)
     # The abutments under each end, then the bents across the stream.
-    abutment(d, rnd, DECK_X0 - 1.0, DECK_X0 + TILE - 3, DECK_Y1 - 3, DECK_Y1 + FASCIA + LEG - 1)
-    abutment(d, rnd, DECK_X1 - TILE + 3, DECK_X1 + 1.0, DECK_Y1 - 3, DECK_Y1 + FASCIA + LEG - 1)
-    for k in (1.5, 2.5, 3.5):
-        bent(d, DECK_X0 + k * TILE)
-    # The north rail, behind the deck.
-    posts = [DECK_X0 + 1.2 + i * (DECK_X1 - DECK_X0 - 2.4) / 6 for i in range(7)]
-    rail(d, DECK_Y0 + 0.5, posts, 0.5, RAIL)
+    abutment(d, rnd, DECK_X0 + 0.5, west_x1, DECK_Y1, foot)
+    abutment(d, rnd, east_x0, DECK_X1 - 0.5, DECK_Y1, foot)
+    for bx in bents:
+        bent(d, bx)
+    # The north rail, behind the deck: four posts, so it reads as a rail
+    # with open space under it, not a fence.
+    posts = [DECK_X0 + 1.2 + i * (DECK_X1 - DECK_X0 - 2.4) / 3 for i in range(4)]
+    rail(d, DECK_Y0 + 0.5, posts, 0.52, RAIL, 1.3, 0.8)
     # The deck: planks laid north-south across the stringers, each its own
     # shade, with grain, a gap between, and nail heads over the stringers.
     x = DECK_X0
@@ -147,10 +168,11 @@ def paint_bridge(seed=968):
     line(d, [(DECK_X0, DECK_Y1 + 0.3), (DECK_X1, DECK_Y1 + 0.3)], B.ramp(TIMBER, 0.55), 0.4)
     for gx in range(int(DECK_X0) + 3, int(DECK_X1) - 2, 7):
         line(d, [(gx, DECK_Y1 + 1.5), (gx + 3.5, DECK_Y1 + 1.5)], B.ramp(TIMBER, 0.22), 0.3)
-    # The south rail, on the near edge: lower, and only a post at each end
-    # and the middle, so it reads as a rail in front and not as a fence
-    # across the planks.
-    rail(d, DECK_Y1 - 0.5, [posts[0], posts[3], posts[-1]], 0.7, RAIL - 2.5)
+    # The south rail, on the near edge: low and thin, three posts with clear
+    # gaps between, so it reads as a rail in front and not as a wall across
+    # the planks.
+    near_posts = [DECK_X0 + 1.2, (DECK_X0 + DECK_X1) / 2, DECK_X1 - 1.2]
+    rail(d, DECK_Y1 - 0.5, near_posts, 0.68, NEAR_RAIL, 1.1, 0.7)
     return F.shrink_shaded(lay, shade, PALETTE)
 
 
