@@ -49,11 +49,14 @@ def line(d, pts, col, w):
     d.line([(x * P.S, y * P.S) for x, y in pts], fill=col, width=max(1, int(w * P.S)))
 
 
-def speckle(d, rnd, inside, n, tones):
-    """Granite grain: n flecks at points chosen by inside()."""
+def speckle(d, rnd, cx, cy, rx, ry, n, tones):
+    """Granite grain: n flecks inside the face's ellipse (centre cx, cy,
+    radii rx, ry), inset so no fleck reaches past the rim."""
     S = P.S
     for _ in range(n):
-        x, y = inside(rnd)
+        # A uniform point in the unit disc, scaled to the inset ellipse.
+        a, t = rnd.uniform(0, 2 * math.pi), math.sqrt(rnd.random())
+        x, y = cx + (rx - 0.8) * t * math.cos(a), cy + (ry - 0.8) * t * math.sin(a)
         r = rnd.uniform(0.18, 0.32)
         d.ellipse(((x - r) * S, (y - r) * S, (x + r) * S, (y + r) * S), fill=B.ramp(GRANITE, rnd.choice(tones)))
 
@@ -85,7 +88,7 @@ def paint_millstone(seed=968):
     sd.ellipse(((rcx - 4) * P.S, (base - 3.5) * P.S, (rcx + 13) * P.S, (base + 0.5) * P.S), fill=255)
     oval(d, rcx + 1.8, rcy + 0.3, rr * 0.92, rr, B.ramp(GRANITE, 0.3))           # the thickness, in shade
     oval(d, rcx, rcy, rr * 0.92, rr, B.ramp(GRANITE, 0.56))
-    speckle(d, rnd, lambda r: (rcx + r.uniform(-6.5, 6.5), rcy + r.uniform(-7, 7)), 40, (0.35, 0.7, 0.8))
+    speckle(d, rnd, rcx, rcy, rr * 0.92, rr, 40, (0.35, 0.7, 0.8))
     harps(d, rcx, rcy, rr * 0.92, rr, 0.56, 2.2)
     oval(d, rcx, rcy, 1.8, 2.0, B.ramp(DARK, 0.6))                                # the eye
     oval(d, rcx - 0.4, rcy - 0.6, 1.0, 0.9, B.ramp(DARK, 0.2))
@@ -104,7 +107,7 @@ def paint_millstone(seed=968):
     oval(d, bcx, bcy + th, brx, bry, B.ramp(GRANITE, 0.24))
     d.rectangle(((bcx - brx) * P.S, bcy * P.S, (bcx + brx) * P.S, (bcy + th) * P.S), fill=B.ramp(GRANITE, 0.34))
     oval(d, bcx, bcy, brx, bry, B.ramp(GRANITE, 0.66))
-    speckle(d, rnd, lambda r: (bcx + r.uniform(-7.5, 7.5), bcy + r.uniform(-3.2, 3.2)), 34, (0.45, 0.78, 0.88))
+    speckle(d, rnd, bcx, bcy, brx, bry, 34, (0.45, 0.78, 0.88))
     harps(d, bcx, bcy, brx, bry, 0.66, 1.3)
     oval(d, bcx, bcy, 1.6, 0.9, B.ramp(DARK, 0.5))
     d.arc(((bcx - brx) * P.S, (bcy - bry) * P.S, (bcx + brx) * P.S, (bcy + bry) * P.S), 180, 300,
