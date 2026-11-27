@@ -7,10 +7,10 @@ no pack art.
 
 Writes client/assets/trees/outhouse.png, one 64x128 frame (32x64 pack px
 drawn at density 2, shown at render_scale 1: the same size in the world,
-twice the detail). The art fills the frame as the pack art did, its base on
-the frame's bottom row, so with the anchor (0.5/0.85), footprint and door
-unchanged a player still walks to the same door and goes in (the foot sits
-2.5 pack px above the frame's bottom, leaving room for the cast shadow).
+twice the detail). The art fills the frame as the pack art did, so with the
+anchor (0.5/0.85), footprint and door unchanged a player still walks to the
+same door and goes in. Its foot sits 2.5 pack px above the frame's bottom,
+leaving room for the cast shadow (and --check keeps the outer rows clear).
 
 A "necessary house" of the 1690s: a small board-and-batten privy seen from
 the front, a little of its right side showing, under a shed roof of riven
@@ -235,9 +235,9 @@ STATE_ROW = re.compile(r"\('([0-9a-f-]{36})', '([^']+)', '([^']+)', (\d+), (\d+)
 
 def migration_states(path=MIGRATION):
     """The migration's llm968p_state rows, as ({(asset id, state): (sheet,
-    src_x, src_y, src_w, src_h, frame_count, frame_rate)}, problems). Every
-    row of the VALUES block must parse (comments and the commas between rows
-    aside), and no (asset, state) may appear twice."""
+    src_x, src_y, src_w, src_h, frame_count, frame_rate)}, problems). The
+    VALUES block (comments aside) must be exactly a comma-separated list of
+    rows that parse, and no (asset, state) may appear twice."""
     text = open(path, encoding="utf-8").read()
     m = re.search(r"INSERT INTO llm968p_state VALUES(.*?);", text, re.S)
     if not m:
@@ -250,9 +250,13 @@ def migration_states(path=MIGRATION):
             problems.append("migration state %s %s is written twice" % key)
         rows[key] = (r.group(3), int(r.group(4)), int(r.group(5)), int(r.group(6)), int(r.group(7)),
                      int(r.group(8)), float(r.group(9)))
-    left = STATE_ROW.sub("", body).replace(",", "").split()
-    if left:
-        problems.append("migration llm968p_state has text that is not a state row: %s" % " ".join(left)[:80])
+    # The block must be exactly a comma-separated list of state rows: no
+    # other text, and no stray, doubled or trailing comma (PostgreSQL would
+    # reject one, but only when the migration runs).
+    row = STATE_ROW.pattern
+    if not re.fullmatch(r"\s*%s(?:\s*,\s*%s)*\s*" % (row, row), body):
+        problems.append("migration llm968p_state VALUES is not a comma-separated list of state rows: %s"
+                        % " ".join(body.split())[:120])
     return rows, problems
 
 
