@@ -36,7 +36,7 @@ import random
 import re
 import sys
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 import common as C
 from common import ramp
@@ -383,6 +383,20 @@ def ledger(room, x0, y0, x1, y1):
         room.rect(mid + 0.8, yy, x1 - 0.8 - ((k + 1) % 3) * 0.8, yy + 0.5, ramp(C.TIMBER, 0.3))
 
 
+def top_light(room, x0, y0, x1, y1, rnd):
+    """A board top's timber: the light pooling toward its upper left, a few
+    short uneven grain marks."""
+    glow = Image.new("L", room.lay.size, 0)
+    ImageDraw.Draw(glow).ellipse(((x0 - 6) * C.S, (y0 - 4) * C.S, (x0 + (x1 - x0) * 0.55) * C.S, (y1 - 2) * C.S), fill=60)
+    mask = Image.new("L", room.lay.size, 0)
+    ImageDraw.Draw(mask).rectangle((x0 * C.S, y0 * C.S, x1 * C.S - 1, y1 * C.S - 1), fill=255)
+    glow = ImageChops.multiply(glow.filter(ImageFilter.GaussianBlur(3 * C.S)), mask)
+    room.lay.paste(Image.new("RGBA", room.lay.size, C.B.rgb(C.OAK[-1])), (0, 0), glow)
+    for _ in range(int((x1 - x0) / 5)):
+        gx, gy = rnd.uniform(x0 + 1, x1 - 4), rnd.uniform(y0 + 1, y1 - 1)
+        room.line([(gx, gy), (gx + rnd.uniform(1.5, 3.5), gy + rnd.uniform(-0.3, 0.3))], ramp(C.OAK, 0.6), 0.3)
+
+
 def keeper_desk(room, x, y, w, h, rnd):
     """The keeper's desk, a joined oak counter seen from the front at a
     slant: a two-board top with a moulded front edge; the front framed in
@@ -402,6 +416,7 @@ def keeper_desk(room, x, y, w, h, rnd):
     room.rect(x, top0, x + w, top0 + 0.7, ramp(C.OAK, 0.98))
     room.rect(x, top0, x + 0.7, top1, ramp(C.OAK, 0.94))
     room.rect(x + w - 2.0, top0, x + w, top1, ramp(C.OAK, 0.6))
+    top_light(room, x, top0, x + w, top1, rnd)
     # The moulded front edge: a lit round, a dark cove under it.
     room.rect(x - 0.4, top1, x + w + 0.4, top1 + 1.2, ramp(C.OAK, 0.84))
     room.rect(x - 0.4, top1 + 1.2, x + w + 0.4, top1 + 2.4, ramp(C.OAK, 0.3))
@@ -467,6 +482,7 @@ def joined_table(room, x, y, w, h, rnd):
     room.rect(x, top0, x + w, top0 + 0.7, ramp(C.OAK, 0.98))
     room.rect(x, top0, x + 0.7, top1, ramp(C.OAK, 0.9))
     room.rect(x + w - 2.0, top0, x + w, top1, ramp(C.OAK, 0.6))
+    top_light(room, x, top0, x + w, top1, rnd)
     room.rect(x - 0.4, top1, x + w + 0.4, top1 + 1.0, ramp(C.OAK, 0.9))
     room.rect(x - 0.4, top1 + 1.0, x + w + 0.4, top1 + 1.8, ramp(C.OAK, 0.2))
     room.rect(x + w - 1.5, top1 + 1.8, x + w - 0.2, top1 + 5.2, ramp(C.OAK, 0.18))
@@ -593,19 +609,25 @@ def pot_strip(frames=4):
             room.line([(lx, top), (lx + (lx - cx) * 0.12, bot)], ramp(C.IRON, t), 0.9)
             room.ellipse(lx - 1.0 + (lx - cx) * 0.12, bot - 0.6, lx + 1.0 + (lx - cx) * 0.12, bot + 0.4, ramp(C.IRON, t))
         room.ellipse(cx - 9.5, 20.6, cx + 9.5, 27.4, ramp(C.IRON, 0.3))
-        room.ellipse(cx - 8.7, 20.8, cx + 8.7, 25.6, ramp(C.FIRE, 0.18))
-        glow = 0.45 + 0.08 * math.sin(ph)
-        room.speckle(cx - 7.6, 21.2, cx + 7.6, 25.0, 40, C.FIRE, (glow, glow + 0.15, glow + 0.32, 0.25), rnd, (0.5, 1.0))
+        room.ellipse(cx - 8.7, 20.8, cx + 8.7, 25.6, ramp(C.SOOT, 0.4))
+        # Coals: dark lumps with their glowing seams breathing between them.
+        glow = 0.32 + 0.1 * math.sin(ph)
+        room.speckle(cx - 7.6, 21.4, cx + 7.6, 24.8, 14, C.FIRE, (glow, glow + 0.14, glow + 0.28), rnd, (0.4, 0.8))
+        room.speckle(cx - 7.6, 21.2, cx + 7.6, 25.0, 22, C.IRON, (0.08, 0.16, 0.24), rnd, (0.8, 1.5))
         room.rect(cx - 9.5, 24.6, cx + 9.5, 25.2, ramp(C.IRON, 0.55))
         room.rect(cx - 9.0, 25.2, cx + 9.0, 25.8, ramp(C.IRON, 0.12))
         # The pot: a round iron belly lit from below by the coals, its rim,
         # the stew, the bail handle.
+        # The trivet the pot stands on in the pan.
+        for tx in (cx - 4.0, cx + 0.6, cx + 4.4):
+            room.rect(tx - 0.5, 21.0, tx + 0.5, 24.2, ramp(C.IRON, 0.05))
+        room.rect(cx - 5.2, 20.6, cx + 5.2, 21.4, ramp(C.IRON, 0.12))
         room.ellipse(cx - 5.4, 12.6, cx + 5.4, 23.0, ramp(C.IRON, 0.3))
         room.ellipse(cx - 4.6, 13.4, cx - 1.0, 18.6, ramp(C.IRON, 0.58))
         room.ellipse(cx - 3.8, 14.0, cx - 2.2, 16.2, ramp(C.IRON, 0.85))
         room.ellipse(cx + 2.0, 14.4, cx + 5.0, 20.6, ramp(C.IRON, 0.18))
-        room.ellipse(cx - 4.4, 20.0, cx + 4.4, 23.0, ramp(C.FIRE, 0.3 + 0.06 * math.sin(ph + 1.0)))
-        room.ellipse(cx - 3.8, 20.0, cx + 3.8, 22.2, ramp(C.IRON, 0.3))
+        room.ellipse(cx - 4.4, 20.4, cx + 4.4, 23.0, ramp(C.FIRE, 0.22 + 0.05 * math.sin(ph + 1.0)))
+        room.ellipse(cx - 3.8, 20.0, cx + 3.8, 22.4, ramp(C.IRON, 0.3))
         room.ellipse(cx - 5.4, 11.2, cx + 5.4, 14.4, ramp(C.IRON, 0.62))
         room.ellipse(cx - 4.5, 11.7, cx + 4.5, 13.8, ramp(C.OAK, 0.3))
         for b in range(3):
@@ -650,9 +672,9 @@ def candle_strip(frames=4):
         room.rect(cx + 0.6, base - 14.2, cx + 1.3, base - 11.6, ramp(C.LINEN, 0.88))
         room.rect(cx - 0.15, base - 15.6, cx + 0.2, base - 14.4, ramp(C.SOOT, 0.3))
         # The flame.
-        lean = (0.0, 1.0, -0.7, 0.5)[k % 4]
-        tall = (4.6, 5.6, 3.8, 5.0)[k % 4]
-        width = (1.8, 1.5, 2.1, 1.7)[k % 4]
+        lean = (0.0, 0.1, 1.5, -0.7)[k % 4]
+        tall = (5.2, 3.4, 4.8, 4.4)[k % 4]
+        width = (1.6, 2.4, 1.7, 1.9)[k % 4]
         fb = base - 14.8
         for scale, tone in ((1.0, 0.5), (0.74, 0.72), (0.5, 0.9), (0.26, 1.0)):
             half = width * scale
@@ -826,17 +848,19 @@ def hall_door_open(seed=803):
         room.rect(2.4, yy, 29.6, yy + 3.2, ramp(C.FLOOR, 0.22 + k * 0.06))
         room.rect(2.4, yy + 3.0, 29.6, yy + 3.4, ramp(C.FLOOR, 0.08))
     # Window light from the chamber's casement lying across its floor.
-    room.poly([(16, 20.5), (24, 20.5), (29.6, 31.6), (20, 31.6)], ramp(C.FLOOR, 0.6))
-    room.poly([(17.5, 21), (22.5, 21), (26.5, 30.5), (21, 30.5)], ramp(C.FLOOR, 0.72))
-    room.rect(17, 6, 24, 15, ramp(C.DAYLIGHT, 0.2))
-    room.rect(20.2, 6, 20.8, 15, ramp(C.GLASS, 0.15))
+    room.poly([(16, 20.5), (24, 20.5), (29.6, 31.6), (20, 31.6)], ramp(C.FLOOR, 0.4))
+    room.poly([(17.5, 21), (22.5, 21), (26.5, 30.5), (21, 30.5)], ramp(C.FLOOR, 0.46))
+    room.rect(17, 6, 24, 15, ramp(C.GLASS, 0.42))
+    room.rect(17, 6, 24, 9, ramp(C.GLASS, 0.55))
+    room.rect(20.2, 6, 20.8, 15, ramp(C.GLASS, 0.12))
     room.rect(16.4, 5.4, 24.6, 6.0, ramp(C.TIMBER, 0.3))
     room.rect(16.4, 15, 24.6, 15.8, ramp(C.TIMBER, 0.35))
     # The leaf, swung in on its hinges: its face foreshortened, darker
     # toward its far edge, a hinge strap showing.
-    room.poly([(2.4, 2.6), (8.6, 5.0), (8.6, 29.4), (2.4, 32)], ramp(C.OAK, 0.4))
+    room.poly([(2.4, 2.6), (8.6, 5.0), (8.6, 29.4), (2.4, 32)], ramp(C.OAK, 0.48))
     room.poly([(2.4, 2.6), (4.2, 3.3), (4.2, 32), (2.4, 32)], ramp(C.OAK, 0.56))
     room.rect(8.0, 5.0, 8.6, 29.4, ramp(C.OAK, 0.2))
+    room.rect(8.6, 5.0, 9.4, 29.4, ramp(C.SOOT, 0.0))
     for hy in (7.5, 24.5):
         room.poly([(2.4, hy), (8.0, hy + 1.0), (8.0, hy + 2.0), (2.4, hy + 1.4)], ramp(C.IRON, 0.35))
     door_frame(room, 0, 0, 32, 32, rnd)
@@ -1007,11 +1031,33 @@ def trunk(room, x, y, w, h, rnd):
     room.line([(x + w - 0.8, lid + 1.6), (x + w + 0.0, lid + 3.6), (x + w - 0.8, lid + 5.4)], ramp(LEATHER, 0.3), 0.6)
 
 
+def weave(room, x0, y0, x1, y1, rnd):
+    """Break the guest coverlet's even check into homespun: its pale cross
+    threads (the kit's undyed linen) dyed down toward the madder-brown in
+    uneven runs, and short weft slubs over the cloth."""
+    pale = ramp(C.LINEN, 0.45)
+    box = tuple(int(round(v * C.S)) for v in (x0, y0, x1, y1))
+    px = room.lay.load()
+    run = 3 * C.S
+    for y in range(box[1], box[3]):
+        for x in range(box[0], box[2]):
+            c = px[x, y]
+            # The thread's colour, or the thread brightened where the light
+            # lies on the mattress.
+            if c[3] and sum(abs(c[i] - pale[i]) for i in range(3)) < 60:
+                seg = random.Random(hash((x // run, y // run, 969)) & 0xffff).uniform(0.46, 0.7)
+                px[x, y] = ramp(FADED, seg)
+    for _ in range(int((x1 - x0) * (y1 - y0) / 6)):
+        sx, sy = rnd.uniform(x0 + 3.8, x1 - 5.8), rnd.uniform(y0 + 0.5, y1 - 0.3)
+        room.rect(sx, sy, sx + rnd.uniform(0.8, 2.2), sy + 0.25, ramp(FADED, rnd.choice((0.3, 0.52, 0.62))))
+
+
 def guest_pieces(seed=848):
     w, h = 112, 128
     rnd = random.Random(seed)
     room = C.Room(w, h)
     C.rope_bed(room, 16, 44, 32, 44, FADED, rnd, "check")
+    weave(room, 17.6, 56, 46.4, 75.5, rnd)
     trunk(room, 16, 102, 32, 16, rnd)
     candle_stand(room, 48, 32, 16, 36, rnd)
     chest_of_drawers(room, 96, 24, 16, 48, rnd)
