@@ -8,8 +8,9 @@ left), in room px.
   The blue houses: limewash (another tint for common.plaster_wall), wainscot,
                    brick_hearth, warming_pan, spinning_wheel
   Set dressing:    corn_braid, onion_string, musket, lantern
-  Furniture:       blanket, straw_pallet, grain_sack, piece_shadows
-  The tent:        tent_shell (canvas, poles, ground), bedroll, snapsack
+  Furniture:       straw_pallet and bedroll (on lying, flat_blanket, straw;
+                   their floor shadow lying_shadow), grain_sack, piece_shadows
+  The tent:        tent_shell (canvas, poles, ground), pole_hook, snapsack
 
 The tent's canvas, rope, wool, leather and hemp are the painted camp's
 (tools/tree-art/camp.py), so the tent seen from inside is the tent outside.
@@ -71,19 +72,6 @@ def piece_shadows(room, rects, strength=170):
     edge, a little to the right (light from the upper left)."""
     for x, y, w, h in rects:
         room.shadow(x + 1, y + h - 3, x + w + 1, y + h + 1.5, strength)
-
-
-def silhouette(room, pts, col, grow=0.45):
-    """A dark outline round a shape on the room sheet, so it reads against a
-    busy ground: the polygon drawn a little larger, before the shape."""
-    cx = sum(p[0] for p in pts) / len(pts)
-    cy = sum(p[1] for p in pts) / len(pts)
-    out = []
-    for px, py in pts:
-        dx, dy = px - cx, py - cy
-        n = math.hypot(dx, dy) or 1.0
-        out.append((px + dx / n * grow, py + dy / n * grow))
-    room.poly(out, col)
 
 
 # ---------------------------------------------------------------- floors
@@ -419,62 +407,6 @@ def lantern(room, cx, y, lit=True):
 
 
 # ---------------------------------------------------------------- furniture
-
-def lumpy(x0, y0, x1, y1, rnd, n=40, power=3.0, lump=0.6):
-    """A soft, lumpy outline round the box (x0, y0, x1, y1): a rounded
-    squarish oval whose edge bulges in and out a little, as a stuffed bag's
-    does. n points."""
-    cx, cy, rx, ry = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2, (y1 - y0) / 2
-    p1, p2 = rnd.uniform(0, 6.3), rnd.uniform(0, 6.3)
-    pts = []
-    for i in range(n):
-        a = 2 * math.pi * i / n
-        c, sn = math.cos(a), math.sin(a)
-        r = (abs(c) ** power + abs(sn) ** power) ** (-1.0 / power)
-        bulge = lump * (0.6 * math.sin(3 * a + p1) + 0.4 * math.sin(5 * a + p2))
-        pts.append((cx + (rx * r + bulge) * c, cy + (ry * r + bulge) * sn))
-    return pts
-
-
-def wavy(corners, rnd, steps=7, wave=0.5):
-    """A quad's outline with its edges wavy, as cloth lying loose: each edge
-    split into steps, the inner points nudged across it."""
-    pts = []
-    for i in range(4):
-        a, b = corners[i], corners[(i + 1) % 4]
-        dx, dy = b[0] - a[0], b[1] - a[1]
-        n = math.hypot(dx, dy) or 1.0
-        nx, ny = -dy / n, dx / n
-        for k in range(steps):
-            t = k / steps
-            off = 0.0 if k == 0 else rnd.uniform(-wave, wave)
-            pts.append((a[0] + dx * t + nx * off, a[1] + dy * t + ny * off))
-    return pts
-
-
-def _mask(room, pts, dx=0.0, dy=0.0):
-    m = Image.new("L", room.lay.size, 0)
-    ImageDraw.Draw(m).polygon([((px + dx) * C.S, (py + dy) * C.S) for px, py in pts], fill=255)
-    return m
-
-
-def soft_shade(room, pts, off=1.4, dark=110, lit=70):
-    """Round a flat shape into a soft body: shade along its lower right
-    inside edge, light along its upper left, both blurred and kept inside
-    it."""
-    m = _mask(room, pts)
-    rim_dark = ImageChops.subtract(m, _mask(room, pts, -off, -off))
-    rim_lit = ImageChops.subtract(m, _mask(room, pts, off, off))
-    for rim, col, a in ((rim_dark, (18, 12, 8, 255), dark), (rim_lit, (252, 242, 220, 255), lit)):
-        rim = rim.point(lambda v, a=a: v * a // 255).filter(ImageFilter.GaussianBlur(0.8 * C.S))
-        room.lay.paste(Image.new("RGBA", room.lay.size, col), (0, 0), ImageChops.multiply(rim, m))
-
-
-def soft_patch(room, pts, col, strength, blur=1.6):
-    """A blurred patch of col over the shape pts (a sag, a hollow)."""
-    m = _mask(room, pts).point(lambda v: v * strength // 255).filter(ImageFilter.GaussianBlur(blur * C.S))
-    room.lay.paste(Image.new("RGBA", room.lay.size, col), (0, 0), m)
-
 
 def soft_quad(tl, tr, br, bl, rnd, cut=1.4, wave=0.25, steps=5):
     """A four-sided outline with its corners rounded off (cut room px) and
