@@ -375,9 +375,12 @@ def migration_states(path=MIGRATION):
             problems.append("migration state %s %s is written twice" % key)
         rows[key] = (r.group(3), int(r.group(4)), int(r.group(5)), int(r.group(6)), int(r.group(7)),
                      int(r.group(8)), float(r.group(9)))
-    left = STATE_ROW.sub("", body).replace(",", "").split()
-    if left:
-        problems.append("migration llm968q_state has text that is not a state row: %s" % " ".join(left)[:80])
+    # The whole block must be rows separated by single commas, as PostgreSQL
+    # needs: no text that is not a row, no missing or extra comma.
+    block = r"\s*%s(?:\s*,\s*%s)*\s*" % (STATE_ROW.pattern, STATE_ROW.pattern)
+    if not re.fullmatch(block, body):
+        left = " ".join(STATE_ROW.sub(" ROW ", body).split())
+        problems.append("migration llm968q_state is not rows separated by commas: %s" % left[:120])
     return rows, problems
 
 
@@ -424,9 +427,11 @@ def picture_problems(sheet):
             out.append("debris-heap %s: an empty frame" % state)
             continue
         # The art's lowest row (its cast shadow included) a little below
-        # the feet, as the heap lies on the ground there.
-        if not feet <= box[3] <= feet + 8:
-            out.append("debris-heap %s: art ends on row %d, not just below the feet (row %d)" % (state, box[3], feet))
+        # the feet, as the heap lies on the ground there. getbbox's bottom
+        # is exclusive: the last row with art is one above it.
+        bottom = box[3] - 1
+        if not feet <= bottom <= feet + 8:
+            out.append("debris-heap %s: art ends on row %d, not just below the feet (row %d)" % (state, bottom, feet))
         if box[2] - box[0] < fw * 0.7:
             out.append("debris-heap %s: art only %d px wide, under 70%% of the frame" % (state, box[2] - box[0]))
     return out
