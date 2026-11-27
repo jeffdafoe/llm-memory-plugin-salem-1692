@@ -225,12 +225,12 @@ FRAMES = {"sign-post": (POST_FRAME[0] * DENSITY, POST_FRAME[1] * DENSITY),
 MIGRATION = os.path.join(B.ROOT, "migrations", "LLM-968n-painted-signs_up.sql")
 
 
-STATE_ROW = re.compile(r"\('([0-9a-f-]{36})', '([^']+)', '([^']+)', (\d+), (\d+), (\d+), (\d+), \d+, [\d.]+\)")
+STATE_ROW = re.compile(r"\('([0-9a-f-]{36})', '([^']+)', '([^']+)', (\d+), (\d+), (\d+), (\d+), (\d+), ([\d.]+)\)")
 
 
 def migration_states(path=MIGRATION):
     """The migration's llm968n_state rows, as ({(asset id, state): (sheet,
-    src_x, src_y, src_w, src_h)}, problems). Every row of the VALUES block
+    src_x, src_y, src_w, src_h, frame_count, frame_rate)}, problems). Every row of the VALUES block
     must parse (comments and the commas between rows aside), and no
     (asset, state) may appear twice."""
     text = open(path, encoding="utf-8").read()
@@ -243,7 +243,8 @@ def migration_states(path=MIGRATION):
         key = (r.group(1), r.group(2))
         if key in rows:
             problems.append("migration state %s %s is written twice" % key)
-        rows[key] = (r.group(3), int(r.group(4)), int(r.group(5)), int(r.group(6)), int(r.group(7)))
+        rows[key] = (r.group(3), int(r.group(4)), int(r.group(5)), int(r.group(6)), int(r.group(7)),
+                     int(r.group(8)), float(r.group(9)))
     left = STATE_ROW.sub("", body).replace(",", "").split()
     if left:
         problems.append("migration llm968n_state has text that is not a state row: %s" % " ".join(left)[:80])
@@ -252,14 +253,15 @@ def migration_states(path=MIGRATION):
 
 def migration_problems(path=MIGRATION):
     """The migration must point every state at its frame in LAYOUT (the
-    sheet, the frame's offset in the row, the frame size), and at nothing
-    else."""
+    sheet, the frame's offset in the row, the frame size, one still frame),
+    and at nothing else."""
     rows, out = migration_states(path)
     want = {}
     for name, frames in LAYOUT.items():
         fw, fh = FRAMES[name]
         for i, (asset_id, state) in enumerate(frames):
-            want[(asset_id, state)] = ("res://assets/trees/%s.png" % name, i * fw, 0, fw, fh)
+            # Every state is one still frame: frame_count 1, frame_rate 0.
+            want[(asset_id, state)] = ("res://assets/trees/%s.png" % name, i * fw, 0, fw, fh, 1, 0.0)
     for key in sorted(set(want) | set(rows)):
         if rows.get(key) != want.get(key):
             out.append("migration state %s %s is %s, the layout says %s" % (key[0], key[1], rows.get(key), want.get(key)))
