@@ -980,6 +980,14 @@ def selftest():
 
     refused("a heaped good with a stroke off its cell", lambda: run(G.on_crate(stray)))
 
+    # A shape drawn AT the cell's bottom edge fills the one canvas row past
+    # it (Pillow's polygon edges are inclusive); the shrink averages that row
+    # away, so only the canvas check (no_spill) sees it.
+    def on_the_edge(r, rnd):
+        r.poly([(4, 28), (12, 28), (12, 32), (4, 32)], col)
+
+    refused("a cell painted onto the canvas row past its edge", lambda: run(on_the_edge))
+
     # paint_cell guards the grown, outlined cell too: a cell that fits as
     # painted, grown further than it fits (as a wrong grow_factor would),
     # must be refused by the final check, not cropped.

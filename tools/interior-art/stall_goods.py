@@ -116,7 +116,7 @@ def basket_front(r, x0, x1, rim, bot=BOT):
         while x < b - 0.3:
             r.rect(x, y, min(b, x + 0.9), y + 0.9, ramp(C.STRAW, 0.5 if (x - a) < (b - a) * 0.4 else 0.4))
             x += 1.8
-        r.rect(a, y + 0.9, b, y + 1.2, ramp(C.STRAW, 0.18))
+        r.rect(a, y + 0.9, b, min(bot - 0.1, y + 1.2), ramp(C.STRAW, 0.18))
         y += 1.3
         row += 1
     # Shade down the right side.
@@ -152,10 +152,11 @@ def crate_front(r, x0, x1, rim, bot=BOT):
 def sack(r, x0, x1, top, cols, bot=BOT, open_top=True):
     """A sack slumped on the floor, its mouth rolled back (open) or tied."""
     w = x1 - x0
-    r.poly([(x0 + w * 0.12, top + 2.0), (x1 - w * 0.12, top + 2.0), (x1, bot - 3.0), (x1 - w * 0.08, bot),
-            (x0 + w * 0.08, bot), (x0, bot - 3.0)], ramp(cols, 0.5))
-    r.poly([(x0 + w * 0.62, top + 2.0), (x1 - w * 0.12, top + 2.0), (x1, bot - 3.0), (x1 - w * 0.08, bot),
-            (x0 + w * 0.6, bot)], ramp(cols, 0.36))
+    foot = bot - 0.2             # polygon edges are inclusive: stop above the line
+    r.poly([(x0 + w * 0.12, top + 2.0), (x1 - w * 0.12, top + 2.0), (x1, bot - 3.0), (x1 - w * 0.08, foot),
+            (x0 + w * 0.08, foot), (x0, bot - 3.0)], ramp(cols, 0.5))
+    r.poly([(x0 + w * 0.62, top + 2.0), (x1 - w * 0.12, top + 2.0), (x1, bot - 3.0), (x1 - w * 0.08, foot),
+            (x0 + w * 0.6, foot)], ramp(cols, 0.36))
     r.poly([(x0 + w * 0.12, top + 2.0), (x0 + w * 0.3, top + 2.0), (x0 + w * 0.18, bot - 1.0), (x0, bot - 3.0)],
            ramp(cols, 0.66))
     for k in range(3):
@@ -194,7 +195,7 @@ def bowl(r, cx, bot, w, cols=C.OAK, fill=None, fill_tone=0.5, depth=3.6):
     an oval, its contents inside, the body under it."""
     x0, x1 = cx - w / 2, cx + w / 2
     top = bot - depth
-    r.ellipse(x0 + 0.4, top + 0.6, x1 - 0.4, bot + 1.2, ramp(cols, 0.24))
+    r.ellipse(x0 + 0.4, top + 0.6, x1 - 0.4, bot + 0.6, ramp(cols, 0.24))
     r.rect(x0 + 0.4, top + 1.6, x1 - 0.4, bot - 0.8, ramp(cols, 0.24))
     r.ellipse(x0 + 0.8, top + 1.2, cx + w * 0.1, bot - 0.2, ramp(cols, 0.44))
     r.rect(cx - w * 0.22, bot - 0.6, cx + w * 0.22, bot, ramp(cols, 0.12))
@@ -384,7 +385,7 @@ def g_wheat(r, rnd):
 def p_wheat(r, rnd):
     """A sheaf standing, bound with a twist of its own straw, the ears
     nodding out over the top."""
-    r.poly([(4.5, 32), (11.5, 32), (10.0, 18), (6.0, 18)], ramp(C.STRAW, 0.5))
+    r.poly([(4.5, 31.8), (11.5, 31.8), (10.0, 18), (6.0, 18)], ramp(C.STRAW, 0.5))
     for k in range(12):
         x = 4.8 + k * 0.6
         r.line([(x, 31.6), (8 + (x - 8) * 0.5, 18)], ramp(C.STRAW, 0.4 + 0.3 * (k % 3 == 0)), 0.3)
@@ -911,7 +912,7 @@ def spool(r, cx, bot, cols):
 
 def g_thread(r, rnd):
     spool(r, 5.2, 31.6, C.LINEN)
-    hank(r, 7.4, 14.6, 29.6, C.LINEN, rnd)
+    hank(r, 7.4, 14.6, 29.0, C.LINEN, rnd)
 
 
 def bolt(r, x0, x1, y, h, cols):
@@ -995,7 +996,7 @@ def g_scarf(r, rnd):
         r.rect(2 + k * 2.6, 24.6, 2.6 + k * 2.6, 28, ramp(BRICK, 0.3))
     r.poly([(9.6, 27.6), (13.4, 27.6), (13.0, 31.0), (10.0, 31.0)], ramp(BRICK, 0.42))
     for k in range(4):
-        r.line([(10.2 + k * 0.9, 31.0), (10.2 + k * 0.9, 32.0)], ramp(BRICK, 0.6), 0.4)
+        r.line([(10.2 + k * 0.9, 31.0), (10.2 + k * 0.9, 31.6)], ramp(BRICK, 0.6), 0.4)
 
 
 def stocking(r, x, y, cols, ln=11, knee=False):
@@ -1383,6 +1384,7 @@ def other_index():
 GOOD_GROW = 1.2
 PILE_GROW = 1.14
 GOOD_ROWS = 20
+GROW_MARGIN = 4              # canvas px a grown cell keeps off its edges
 OUTLINE, RING = 0.5, 0.36
 
 
@@ -1470,12 +1472,29 @@ def inside(art, pad, w, h, name):
     return cut
 
 
+def no_spill(lay, pad, w, h, name):
+    """ValueError naming it if the canvas (padded pad room px round a w x h
+    rect) has a solid stroke (alpha 128 or more) outside the rect before the
+    shrink. inside() checks the shrunk art, where a stroke on the single
+    canvas row just past the rect (a rectangle or ellipse whose end is drawn
+    AT x + w or y + h: Pillow's endpoints are inclusive) averages away; the
+    client would still get a faint row at the crop's edge. A faint glow past
+    the rect is allowed: the shrink drops it."""
+    solid = lay.split()[3].point(lambda a: 255 if a >= 128 else 0)
+    solid.paste(0, (pad * C.S, pad * C.S, (pad + w) * C.S, (pad + h) * C.S))
+    if solid.getbbox() is not None:
+        raise ValueError("%s paints a solid stroke outside its rect on the canvas, at %s (canvas px, rect origin)"
+                         % (name, tuple(v - pad * C.S for v in solid.getbbox())))
+
+
 def guarded(w, h, paint, palette, name, outline=0.0, ring=0.0):
     """Paint art cut by a w x h rect: paint(canvas) on a Shifted canvas,
-    shrunk; raises ValueError naming it if anything lands outside the rect
-    or nothing inside it. Returns (the art cropped to the rect, the canvas)."""
+    shrunk; raises ValueError naming it if anything lands outside the rect,
+    on the canvas (no_spill) or in the shrunk art (inside), or nothing
+    inside it. Returns (the art cropped to the rect, the canvas)."""
     c = Shifted(w, h)
     paint(c)
+    no_spill(c.room.lay, c.pad, w, h, name)
     art = C.shrink(c.room, palette, outline=outline, ring=ring)
     return inside(art, c.pad, w, h, name), c
 
@@ -1485,16 +1504,16 @@ def grow_factor(lay, grow, top_row):
     about its foot (bottom middle), up to `grow`: as far as its art still
     fits the cell and stays below `top_row`; never below 1."""
     w, h = lay.size
-    box = lay.split()[3].point(lambda a: 255 if a >= 64 else 0).getbbox()
+    box = lay.getbbox()
     if box is None or grow <= 1.0:
         return 1.0
-    cx = w / 2
+    cx, m = w / 2, GROW_MARGIN
     k = grow
     if box[0] < cx:
-        k = min(k, cx / (cx - box[0]))
+        k = min(k, (cx - m) / (cx - box[0]))
     if box[2] > cx:
-        k = min(k, (w - cx) / (box[2] - cx))
-    k = min(k, (h - top_row * C.S) / max(1, h - box[1]))
+        k = min(k, (w - cx - m) / (box[2] - cx))
+    k = min(k, (h - top_row * C.S - m) / max(1, h - box[1]))
     return max(1.0, k)
 
 
@@ -1521,6 +1540,7 @@ def paint_cell(painter, seed, name, pile=False):
     k = grow_factor(c.canvas(), PILE_GROW if pile else GOOD_GROW, 0 if pile else CELL[1] - GOOD_ROWS)
     r = C.Room(c.room.w, c.room.h)
     r.lay = grown(c, k)
+    no_spill(r.lay, c.pad, CELL[0], CELL[1], name + " grown")
     return inside(C.shrink(r, PALETTE, outline=OUTLINE, ring=RING), c.pad, CELL[0], CELL[1], name + " grown")
 
 
