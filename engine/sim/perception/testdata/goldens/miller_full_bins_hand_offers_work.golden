@@ -20,7 +20,7 @@ You're at your workplace.
 - No coin has passed between you and Silence Walker.
 
 ## Work offers awaiting your decision
-Your stores of flour stand full, with no room for another batch until some is sold — a hand at your post would have nothing to hurry.
+Your stores have no room for a whole batch of flour — there is no batch a hand could speed up just now.
 1. Silence Walker offers to do a job for you for 8 coins — about 4 hours of work (offer id 1)
 Respond with accept_work or decline_work, passing the offer id as labor_id and the words you speak aloud in say. Do not reply with the speak tool: speaking ends your turn, and the offer would go unanswered.
 ## What your wares fetch

@@ -6,7 +6,7 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// idle_hand.go — the "a hand would have nothing to hurry" scene line.
+// idle_hand.go — the "no batch a hand could speed up" scene line.
 //
 // A hired hand at the keeper's post adds LaborProduceBoostPct of the keeper's
 // base rate to a RUNNING batch (sim.produceRateScalePct). With no batch in the
@@ -18,10 +18,15 @@ import (
 // in thirteen.
 //
 // The line states the production fact as a scene and leaves the hire decision
-// to the model — offer_work and accept_work are untouched. It is the exact
-// complement of the "## Your trade" menu (buildForgeChoice): that menu lists the
-// goods a batch could start for, this line shows only when there are none, so
-// the two can never stand in one prompt.
+// to the model — offer_work and accept_work are untouched. It speaks only of
+// production ("no batch a hand could speed up"): a hand may still stoke a hearth
+// or mind the shop, and the line must not read as a verdict on the hire.
+//
+// It and the "## Your trade" menu (buildForgeChoice) are mutually exclusive, not
+// exact complements: both read produceBatchReady, the menu lists the goods a
+// batch could start for, and this line shows only when there are none. Neither
+// may show (a worn stall suppresses this line; the menu's own gates — away from
+// the post, a full produce block — drop the menu).
 
 // IdleHandView is the content-gated idle-production view. nil means a hand
 // could hurry something (or the subject makes nothing) and render writes nothing.
@@ -72,22 +77,15 @@ func buildIdleHand(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Actor
 			continue // not makeable — the same validity test as buildForgeChoice
 		}
 		makes = true
-		batchQty := recipe.OutputQty
-		if batchQty < 1 {
-			batchQty = 1
-		}
-		// The two craftability axes buildForgeChoice filters on, in the same form
-		// (sim.craftableNow's cap headroom and inputs test). A good that passes
-		// both is a batch a hand could hurry, so no line.
-		fitsCap := e.Cap() <= 0 || actorSnap.Inventory[e.Item]+batchQty <= e.Cap()
-		inputsReady := sim.HasProduceInputs(recipe, actorSnap.Inventory)
+		// The same readiness test the "## Your trade" menu filters on. A good that
+		// passes both axes is a batch a hand could hurry, so no line.
+		_, fitsCap, inputsReady := produceBatchReady(actorSnap, e, recipe)
 		if fitsCap && inputsReady {
 			return nil
 		}
 		label := shortageGoodLabel(snap.ItemKinds[e.Item], string(e.Item))
-		// Full first: a good with no room is idle whatever its makings, and "no
-		// room until some is sold" is the truer reason — buying the makings
-		// would not change it.
+		// No room first: a good with no room for a whole batch is idle whatever
+		// its makings, and buying the makings would not change it.
 		if !fitsCap {
 			view.Full = append(view.Full, label)
 			continue
@@ -108,8 +106,10 @@ func renderIdleHand(b *strings.Builder, v *IdleHandView) {
 		return
 	}
 	var clauses []string
+	// "No room for a whole batch", not "full until some is sold": 18 of 20 is not
+	// full, and a batch larger than the whole cap fits no matter what is sold.
 	if len(v.Full) > 0 {
-		clauses = append(clauses, "your stores of "+joinGoods(v.Full)+" stand full, with no room for another batch until some is sold")
+		clauses = append(clauses, "your stores have no room for a whole batch of "+joinGoods(v.Full))
 	}
 	for _, s := range v.Short {
 		if len(s.Missing) == 0 {
@@ -121,7 +121,23 @@ func renderIdleHand(b *strings.Builder, v *IdleHandView) {
 		clauses = append(clauses, "you have not the "+strings.ToLower(missingInputsPhrase(s.Missing))+" for another batch of "+sanitizeInline(s.Good))
 	}
 	line := strings.Join(clauses, ", and ")
-	b.WriteString(strings.ToUpper(line[:1]) + line[1:] + " — a hand at your post would have nothing to hurry.\n")
+	b.WriteString(strings.ToUpper(line[:1]) + line[1:] + " — there is no batch a hand could speed up just now.\n")
+}
+
+// idleHandInOffers reports whether the work-offers section will carry the idle
+// line: it renders there once when any pending offer is a hand offering to work
+// for the subject. The offer_work cue then omits it, so a prompt with both a
+// pending offer and another hireable hand prints the line once, by the decision.
+func idleHandInOffers(idle *IdleHandView, offers []LaborOfferView) bool {
+	if idle == nil {
+		return false
+	}
+	for _, o := range offers {
+		if !o.SubjectIsWorker() {
+			return true
+		}
+	}
+	return false
 }
 
 // joinGoods joins sanitized good labels for prose: "flour", "nails and

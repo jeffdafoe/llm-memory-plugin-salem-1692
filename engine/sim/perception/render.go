@@ -337,7 +337,11 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// LLM-346: the hiring-side twin of the affordance above. Sits immediately after
 	// it so the two mints of the labor market read as one pair — offer your labor,
 	// or ask for someone else's.
-	renderOfferWorkAffordance(&ephemeral, p.HireableWorkers, p.IdleHand, nameOf)
+	offerWorkIdle := p.IdleHand
+	if idleHandInOffers(p.IdleHand, p.LaborOffersForMe) {
+		offerWorkIdle = nil // already said once, by the pending decision above
+	}
+	renderOfferWorkAffordance(&ephemeral, p.HireableWorkers, offerWorkIdle, nameOf)
 	// LLM-152/160: the directional half of seek-work — the town's businesses to head
 	// to, by their resolvable names. Sits with the labor affordance; non-empty
 	// whenever the subject is a broke idle worker with no employer present to solicit
@@ -3939,11 +3943,8 @@ func renderLaborOffersIdle(b *strings.Builder, offers []LaborOfferView, employer
 		return
 	}
 	b.WriteString("## Work offers awaiting your decision\n")
-	for _, o := range offers {
-		if !o.SubjectIsWorker() {
-			renderIdleHand(b, idle)
-			break
-		}
+	if idleHandInOffers(idle, offers) {
+		renderIdleHand(b, idle)
 	}
 	anyAffordable, anyUnaffordable := false, false
 	for i, o := range offers {

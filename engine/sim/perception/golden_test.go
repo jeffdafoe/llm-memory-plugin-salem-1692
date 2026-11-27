@@ -389,14 +389,15 @@ func TestGoldensTradeSceneAffordanceAlwaysStatesReadiness(t *testing.T) {
 }
 
 // TestGoldensIdleHandNeverBesideABatch is the idle-production invariant across the
-// whole matrix: the "a hand at your post would have nothing to hurry" line never
-// renders in a prompt that offers a batch ("## Your trade") or reports one running
-// ("You are making a batch") — in either case a hand has a batch to hurry, and the
-// line would be false. It also only ever renders inside a hire decision (the
-// offer_work cue or the work-offers section), never on its own. Guarded > 0 so a
-// wording change can't make it pass vacuously.
+// whole matrix: the "no batch a hand could speed up" line never renders in a
+// prompt that offers a batch ("## Your trade") or reports one running ("You are
+// making a batch") — in either case a hand has a batch to hurry, and the line
+// would be false. It also only ever renders inside a hire decision (the offer_work
+// cue or the work-offers section), never on its own, and at most once even when
+// both of those render. Guarded > 0 so a wording change can't make it pass
+// vacuously.
 func TestGoldensIdleHandNeverBesideABatch(t *testing.T) {
-	const idleLine = "a hand at your post would have nothing to hurry."
+	const idleLine = "there is no batch a hand could speed up just now."
 	checked := 0
 	for _, sc := range perceptionScenarios {
 		text := renderScenario(sc)
@@ -404,6 +405,9 @@ func TestGoldensIdleHandNeverBesideABatch(t *testing.T) {
 			continue
 		}
 		checked++
+		if n := strings.Count(text, idleLine); n != 1 {
+			t.Errorf("scenario %q: idle-production line renders %d times, want once", sc.name, n)
+		}
 		if strings.Contains(text, "## Your trade") || strings.Contains(text, "You are making a batch") {
 			t.Errorf("scenario %q: idle-production line renders beside a batch the hand could hurry", sc.name)
 		}
@@ -3150,9 +3154,17 @@ var perceptionScenarios = []perceptionScenario{
 		summary: "The live miller trace (Joseph Scott, 11-23 → 11-26): flour 18 of a 20 cap, a batch is 5, wheat on " +
 			"hand, no batch running, Silence Walker co-present and hireable. No batch can start, so a hired hand would " +
 			"hurry nothing — live, he hired five hands across two days who ground nothing. The golden pins the idle-" +
-			"production line leading the offer_work cue ('Your stores of flour stand full … a hand at your post would " +
-			"have nothing to hurry.') and the absence of '## Your trade' (nothing craftable). offer_work stays advertised.",
+			"production line leading the offer_work cue ('Your stores have no room for a whole batch of flour — there " +
+			"is no batch a hand could speed up just now.') and the absence of '## Your trade' (nothing craftable). " +
+			"offer_work stays advertised.",
 		build: millerFullBinsHandPresent,
+	},
+	{
+		name: "miller_full_bins_hand_offers_work_another_hand_present",
+		summary: "The full-bins mill with BOTH hire surfaces live: Silence Walker has asked the miller for work, and Anne " +
+			"Walker, a second worker, stands by and is hireable. The idle line renders once, by the pending decision; the " +
+			"offer_work cue naming Anne renders without it.",
+		build: millerFullBinsHandOffersWorkAnotherHandPresent,
 	},
 	{
 		name: "miller_short_of_wheat_hand_present",
@@ -14950,6 +14962,30 @@ func millerFullBinsHandOffersWork() (*sim.Snapshot, sim.ActorID, []sim.WarrantMe
 
 func millerRoomForABatchHandPresent() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
 	return millHireSnapshot(13, 14, false)
+}
+
+// millerFullBinsHandOffersWorkAnotherHandPresent adds Anne Walker, a second
+// acquainted worker with no offer of her own, to the solicited full-bins mill, so
+// the offer_work cue (naming Anne) and the work-offers section (Silence's offer)
+// render in one prompt.
+func millerFullBinsHandOffersWorkAnotherHandPresent() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
+	snap, josephID, warrants := millHireSnapshot(18, 14, true)
+	const anneID = sim.ActorID("anne")
+	snap.Actors[anneID] = &sim.ActorSnapshot{
+		Kind:              sim.KindNPCShared,
+		DisplayName:       "Anne Walker",
+		Role:              "laborer",
+		State:             sim.StateIdle,
+		InsideStructureID: "mill",
+		CurrentHuddleID:   "h1",
+		Coins:             26,
+		Needs:             map[sim.NeedKey]int{},
+		AttributeSlugs:    []string{sim.AttrWorker},
+		Acquaintances:     map[string]sim.Acquaintance{"Joseph Scott": {}},
+	}
+	snap.Actors[josephID].Acquaintances["Anne Walker"] = sim.Acquaintance{}
+	snap.Huddles["h1"].Members[anneID] = struct{}{}
+	return snap, josephID, warrants
 }
 
 func laborOfferInKindReward() (*sim.Snapshot, sim.ActorID, []sim.WarrantMeta) {
