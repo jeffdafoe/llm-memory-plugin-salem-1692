@@ -197,6 +197,12 @@ const CAMP := {
     "res://assets/trees/camp-small.png": Vector2i(96, 32),
     "res://assets/trees/camp-gear.png": Vector2i(320, 64),
 }
+# migrations/LLM-968j-painted-wagons_up.sql (tools/tree-art/wagons.py): the
+# wagon and the covered wagon (192x192), the cart (128x96).
+const WAGONS := {
+    "res://assets/trees/wagons.png": Vector2i(384, 192),
+    "res://assets/trees/cart.png": Vector2i(128, 96),
+}
 
 var _failures := 0
 var _checks := 0
@@ -435,6 +441,12 @@ func _test_the_tree_sheets_fit_the_migration_rects() -> void:
         if texture != null:
             _check("%s is %s" % [path, CAMP[path]],
                 Vector2i(texture.get_width(), texture.get_height()) == CAMP[path])
+    for path in WAGONS:
+        var texture := load(path) as Texture2D
+        _check("%s is packed" % path, texture != null)
+        if texture != null:
+            _check("%s is %s" % [path, WAGONS[path]],
+                Vector2i(texture.get_width(), texture.get_height()) == WAGONS[path])
     _done()
 
 
