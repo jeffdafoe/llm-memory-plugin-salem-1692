@@ -26,6 +26,7 @@ import argparse
 import math
 import os
 import random
+import re
 import sys
 
 from PIL import Image, ImageDraw
@@ -196,19 +197,69 @@ def paint_sign_board():
 
 # ---------------------------------------------------------------- sheets
 
-SHEETS = {
-    "sign-post": lambda: L.row([paint_sign_post(False), paint_sign_post(True)]),
-    "sign-board": lambda: L.row([paint_sign_board()]),
+# Each sheet's frames, left to right, as (catalog asset id, state). The order
+# is the sheet's layout: the migration points each state at its frame's
+# offset, and --check holds the two together. A frame's picture is chosen by
+# its state's name (paint_frame), so the layout cannot name one state and
+# paint another.
+POST_ID = "796d76b4-9a3b-4541-9852-98d389c1906a"    # Wood Sign Post
+BOARD_ID = "a1f9f3e6-d790-48f9-a169-4c26186e113c"   # Sign Board
+LAYOUT = {
+    "sign-post": [(POST_ID, "default"), (POST_ID, "crooked")],
+    "sign-board": [(BOARD_ID, "default")],
 }
+
+
+def paint_frame(asset_id, state):
+    if asset_id == POST_ID and state in ("default", "crooked"):
+        return paint_sign_post(state == "crooked")
+    if asset_id == BOARD_ID and state == "default":
+        return paint_sign_board()
+    raise ValueError("no painter for %s %s" % (asset_id, state))
+
+
+SHEETS = {name: (lambda frames=frames: L.row([paint_frame(a, s) for a, s in frames])) for name, frames in LAYOUT.items()}
 # Frame size on the sheet (density 2), by sheet.
 FRAMES = {"sign-post": (POST_FRAME[0] * DENSITY, POST_FRAME[1] * DENSITY),
           "sign-board": (BOARD_FRAME[0] * DENSITY, BOARD_FRAME[1] * DENSITY)}
+MIGRATION = os.path.join(B.ROOT, "migrations", "LLM-968n-painted-signs_up.sql")
+
+
+def migration_states(path=MIGRATION):
+    """The migration's llm968n_state rows, as {(asset id, state): (sheet,
+    src_x, src_y, src_w, src_h)}."""
+    text = open(path, encoding="utf-8").read()
+    m = re.search(r"INSERT INTO llm968n_state VALUES(.*?);", text, re.S)
+    if not m:
+        return {}
+    rows = {}
+    for r in re.finditer(r"\('([0-9a-f-]{36})', '([^']+)', '([^']+)', (\d+), (\d+), (\d+), (\d+), \d+, [\d.]+\)", m.group(1)):
+        rows[(r.group(1), r.group(2))] = (r.group(3), int(r.group(4)), int(r.group(5)), int(r.group(6)), int(r.group(7)))
+    return rows
+
+
+def migration_problems(path=MIGRATION):
+    """The migration must point every state at its frame in LAYOUT (the
+    sheet, the frame's offset in the row, the frame size), and at nothing
+    else."""
+    rows = migration_states(path)
+    want = {}
+    for name, frames in LAYOUT.items():
+        fw, fh = FRAMES[name]
+        for i, (asset_id, state) in enumerate(frames):
+            want[(asset_id, state)] = ("res://assets/trees/%s.png" % name, i * fw, 0, fw, fh)
+    out = []
+    for key in sorted(set(want) | set(rows)):
+        if rows.get(key) != want.get(key):
+            out.append("migration state %s %s is %s, the layout says %s" % (key[0], key[1], rows.get(key), want.get(key)))
+    return out
 
 
 def check(out_dir):
-    """Each sheet is exactly what this script paints now, its frames are the
-    size the catalog rects expect, and no frame has art on its outer rows or
-    columns."""
+    """Each sheet is exactly what this script paints now, a row of exactly as
+    many frames as LAYOUT names, of the size the catalog rects expect, with
+    no art on a frame's outer rows or columns; and the migration points each
+    state at its own frame."""
     ok = True
     for name, build in SHEETS.items():
         sheet = Image.open(os.path.join(out_dir, name + ".png")).convert("RGBA")
@@ -218,14 +269,32 @@ def check(out_dir):
             ok = False
             continue
         fw, fh = FRAMES[name]
-        if sheet.height != fh or sheet.width % fw:
-            print("%s: sheet %dx%d is not a row of %dx%d frames" % (name, sheet.width, sheet.height, fw, fh))
+        n = len(LAYOUT[name])
+        if sheet.size != (fw * n, fh):
+            print("%s: sheet %dx%d is not a row of %d %dx%d frames" % (name, sheet.width, sheet.height, n, fw, fh))
             ok = False
             continue
-        for i in range(sheet.width // fw):
+        for i in range(n):
             if any(F.edges_touched(sheet.crop((i * fw, 0, (i + 1) * fw, fh)))):
                 print("%s frame %d: art on the frame edge" % (name, i))
                 ok = False
+    # The crooked frame is the damaged one: it must differ from the default,
+    # and the migration must point the crooked state at it.
+    post = Image.open(os.path.join(out_dir, "sign-post.png")).convert("RGBA")
+    fw, fh = FRAMES["sign-post"]
+    # The arm's tip is the art right of the post (frame x 64 on, above the
+    # footing); crooked, it hangs well below where it points straight.
+    tips = []
+    for i in range(2):
+        box = post.crop((i * fw + 64, 0, (i + 1) * fw, fh // 2)).getbbox()
+        tips.append(box[3] if box else 0)
+    if tips[1] < tips[0] + 16:
+        print("sign-post: the crooked frame's arm (tip down to row %d) does not hang below the default's (row %d)"
+              % (tips[1], tips[0]))
+        ok = False
+    for problem in migration_problems():
+        print(problem)
+        ok = False
     return ok
 
 

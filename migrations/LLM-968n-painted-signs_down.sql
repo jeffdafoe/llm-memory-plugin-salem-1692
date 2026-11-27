@@ -77,9 +77,13 @@ BEGIN
     IF bad > 0 THEN
         RAISE EXCEPTION 'LLM-968n down: % sign state tags differ from the expected ones', bad;
     END IF;
-    SELECT count(*) INTO bad FROM asset a JOIN llm968n_down_sign v ON v.asset_id = a.id WHERE a.render_scale <> 2;
+    -- The pack art stands on the same anchor; the down, like the up, refuses
+    -- one moved since.
+    SELECT count(*) INTO bad FROM asset a JOIN llm968n_down_sign v ON v.asset_id = a.id
+     WHERE (a.render_scale, a.anchor_x, a.anchor_y)
+           IS DISTINCT FROM (2::double precision, 0.5::double precision, 0.85::double precision);
     IF bad > 0 THEN
-        RAISE EXCEPTION 'LLM-968n down: % sign(s) not back at render_scale 2', bad;
+        RAISE EXCEPTION 'LLM-968n down: % sign(s) not back at render_scale 2 on anchor 0.5/0.85', bad;
     END IF;
 END $$;
 
