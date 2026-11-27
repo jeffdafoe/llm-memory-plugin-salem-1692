@@ -437,24 +437,6 @@ def entry_anims(key, text=None):
     return records
 
 
-def canvas_spill(key):
-    """Pieces of the room whose painter lays a solid stroke (alpha 128 or
-    more) outside its rect on the canvas before the shrink. paint_pieces
-    checks the shrunk art, where a stroke on the canvas row just past a rect
-    can average away; this catches it. A faint glow (a blurred light) past
-    the rect is allowed: the shrink drops it."""
-    spec, pad, bad = ROOMS[key], C.PIECE_PAD, []
-    w, h = spec["size"]
-    for (x, y, pw, ph, _s), painter in spec["pieces"]:
-        room = C.Room(w + 2 * pad, h + 2 * pad)
-        painter(room, x + pad, y + pad, pw, ph, random.Random(1))
-        solid = room.lay.split()[3].point(lambda a: 255 if a >= 128 else 0)
-        solid.paste(0, tuple(int(round(v * C.S)) for v in (x + pad, y + pad, x + pad + pw, y + pad + ph)))
-        if solid.getbbox() is not None:
-            bad.append((x, y, pw, ph))
-    return bad
-
-
 def check(out_dir):
     """Each sheet is exactly what this script paints now and of its size;
     each room's entry in interior_rooms.gd names these sheets at this
@@ -493,9 +475,6 @@ def check(out_dir):
             if sheets[name].size != (spec["size"][0] * d, spec["size"][1] * d):
                 print("%s: %s is %s, not the room's size at density %d" % (key, name, sheets[name].size, d))
                 ok = False
-        for rect in canvas_spill(key):
-            print("%s: piece %s paints a solid stroke outside its rect" % (key, rect))
-            ok = False
         alpha = sheets[pieces].split()[3]
         for bed, (x, y, w, h) in spec["covers"].items():
             inside = any(px <= x and py <= y and x + w <= px + pw and y + h <= py + ph

@@ -1480,11 +1480,10 @@ def no_spill(lay, pad, w, h, name):
     AT x + w or y + h: Pillow's endpoints are inclusive) averages away; the
     client would still get a faint row at the crop's edge. A faint glow past
     the rect is allowed: the shrink drops it."""
-    solid = lay.split()[3].point(lambda a: 255 if a >= 128 else 0)
-    solid.paste(0, (pad * C.S, pad * C.S, (pad + w) * C.S, (pad + h) * C.S))
-    if solid.getbbox() is not None:
+    spill = C.solid_outside(lay, (pad * C.S, pad * C.S, (pad + w) * C.S, (pad + h) * C.S))
+    if spill is not None:
         raise ValueError("%s paints a solid stroke outside its rect on the canvas, at %s (canvas px, rect origin)"
-                         % (name, tuple(v - pad * C.S for v in solid.getbbox())))
+                         % (name, tuple(v - pad * C.S for v in spill)))
 
 
 def guarded(w, h, paint, palette, name, outline=0.0, ring=0.0):

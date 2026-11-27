@@ -177,6 +177,20 @@ def shrink(room, palette, outline=0.0, shadow_dark=0.45, ring=0.0):
 PIECE_PAD = 8                # room px of margin round a piece while it is painted
 
 
+def solid_outside(lay, box):
+    """The bounding box (canvas px) of the canvas pixels outside box (canvas
+    px, exclusive end) that are solid, alpha 128 or more, or None. This is
+    the check on the canvas before the shrink: a stroke on the one canvas
+    row just past a rect (a rectangle or ellipse whose end is drawn AT
+    x + w or y + h, Pillow's endpoints being inclusive) averages away in the
+    shrunk art but still leaves a faint row at the client's crop edge. A
+    faint glow past the rect (a blurred light, alpha under 128) is allowed:
+    the shrink drops it."""
+    solid = lay.split()[3].point(lambda a: 255 if a >= 128 else 0)
+    solid.paste(0, box)
+    return solid.getbbox()
+
+
 def paint_pieces(w, h, pieces, palette, outline=0.35, ring=0.18):
     """The pieces sheet (w x h room px). pieces: [((x, y, pw, ph), painter)],
     painter(room, x, y, pw, ph) drawing the piece into that rect in room px.
@@ -185,12 +199,15 @@ def paint_pieces(w, h, pieces, palette, outline=0.35, ring=0.18):
     its rect, so:
       - no two rects may overlap: the client would cut both sprites from the
         same pixels and one piece's art would ride in the other's sprite;
-      - a piece must paint nothing outside its rect, which would be clipped;
+      - a piece must paint nothing outside its rect, which would be clipped:
+        not on the canvas (solid_outside, which sees a one-row stroke the
+        shrink would average away) and not in the shrunk art;
       - a piece must paint something.
     Each piece is painted alone on a canvas PIECE_PAD room px bigger than the
     sheet on every side (so a stroke that runs off the sheet's edge is still
-    seen), shrunk, checked, and pasted into the sheet cropped to its rect.
-    Any breach raises ValueError naming the piece."""
+    seen), checked on the canvas, shrunk, checked again, and pasted into the
+    sheet cropped to its rect. Any breach raises ValueError naming the
+    piece."""
     rects = [r for r, _p in pieces]
     for i, (ax, ay, aw, ah) in enumerate(rects):
         for bx, by, bw, bh in rects[i + 1:]:
@@ -201,6 +218,10 @@ def paint_pieces(w, h, pieces, palette, outline=0.35, ring=0.18):
     for (x, y, pw, ph), painter in pieces:
         room = Room(w + 2 * pad, h + 2 * pad)
         painter(room, x + pad, y + pad, pw, ph)
+        spill = solid_outside(room.lay, tuple(int(round(v * S)) for v in (x + pad, y + pad, x + pad + pw, y + pad + ph)))
+        if spill is not None:
+            raise ValueError("piece %s lays a solid stroke outside its rect on the canvas, at %s (room px, sheet origin)"
+                             % ((x, y, pw, ph), tuple(round(v / S - pad, 2) for v in spill)))
         art = shrink(room, palette, outline=outline, ring=ring)
         box = ((x + pad) * DENSITY, (y + pad) * DENSITY, (x + pad + pw) * DENSITY, (y + pad + ph) * DENSITY)
         outside = art.copy()
