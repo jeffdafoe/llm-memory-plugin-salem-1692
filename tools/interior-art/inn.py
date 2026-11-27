@@ -324,7 +324,7 @@ def common_room(seed=1692):
     C.wall_foot(room, 0, w, wall)
     # The firebox is where the fire anim plays (ROOMS anims).
     fire = ROOMS[INN_KEY]["anims"][0]
-    inn_hearth(room, 84, 127, 0, wall, (fire[2], fire[3], 16, 16), rnd)
+    inn_hearth(room, 84, 127, 0, wall, (fire[3], fire[4], 16, 16), rnd)
     # A mantel board on the breast with the house's pewter, its shadow on
     # the stone under it.
     room.rect(87, 32.6, 124, 34.4, ramp(C.SOOT, 0.3))
@@ -412,8 +412,9 @@ def keeper_desk(room, x, y, w, h, rnd):
     room.rect(x, top0, x + w, top1, ramp(C.OAK, 0.84))
     room.rect(x, (top0 + top1) / 2, x + w, top1, ramp(C.OAK, 0.8))
     for _ in range(6):
-        gy, gx = rnd.uniform(top0 + 0.6, top1 - 0.6), rnd.uniform(x, x + w - 10)
-        room.rect(gx, gy, gx + rnd.uniform(6, 14), gy + 0.25, ramp(C.OAK, 0.72))
+        length = rnd.uniform(6, 14)
+        gy, gx = rnd.uniform(top0 + 0.6, top1 - 0.6), rnd.uniform(x, x + w - length)
+        room.rect(gx, gy, gx + length, gy + 0.25, ramp(C.OAK, 0.72))
     room.rect(x, (top0 + top1) / 2 - 0.2, x + w, (top0 + top1) / 2 + 0.3, ramp(C.OAK, 0.5))
     room.rect(x, top0, x + w, top0 + 0.7, ramp(C.OAK, 0.98))
     room.rect(x, top0, x + 0.7, top1, ramp(C.OAK, 0.94))
@@ -475,8 +476,9 @@ def joined_table(room, x, y, w, h, rnd):
         if k:
             room.rect(x, b0 - 0.2, x + w, b0 + 0.25, ramp(C.OAK, 0.42))
     for _ in range(7):
-        gy, gx = rnd.uniform(top0 + 0.6, top1 - 0.6), rnd.uniform(x, x + w - 14)
-        room.rect(gx, gy, gx + rnd.uniform(6, 14), gy + 0.25, ramp(C.OAK, 0.74))
+        length = rnd.uniform(6, 14)
+        gy, gx = rnd.uniform(top0 + 0.6, top1 - 0.6), rnd.uniform(x, x + w - length)
+        room.rect(gx, gy, gx + length, gy + 0.25, ramp(C.OAK, 0.74))
     # Rings left by wet tankards.
     for _ in range(3):
         rx, ry = rnd.uniform(x + 6, x + w - 8), rnd.uniform(top0 + 6, top1 - 4)
@@ -503,8 +505,9 @@ def form(room, x, y, w, h, rnd):
     room.rect(x + 4, y + h - 4.5, x + w - 4, y + h - 3.4, ramp(C.OAK, 0.36))
     room.rect(x + 0.5, y + 1, x + w - 0.5, y + 6, ramp(C.OAK, 0.74))
     for _ in range(6):
-        gy, gx = rnd.uniform(y + 1.4, y + 5.6), rnd.uniform(x + 0.5, x + w - 12.5)
-        room.rect(gx, gy, gx + rnd.uniform(4, 12), gy + 0.25, ramp(C.OAK, rnd.choice((0.6, 0.88))))
+        length = rnd.uniform(4, 12)
+        gy, gx = rnd.uniform(y + 1.4, y + 5.6), rnd.uniform(x + 0.5, x + w - 0.5 - length)
+        room.rect(gx, gy, gx + length, gy + 0.25, ramp(C.OAK, rnd.choice((0.6, 0.88))))
     room.rect(x + 0.5, y + 1, x + w - 0.5, y + 1.6, ramp(C.OAK, 0.98))
     room.rect(x + 0.2, y + 6, x + w - 0.2, y + 7.1, ramp(C.OAK, 0.86))
     room.rect(x + 0.2, y + 7.1, x + w - 0.2, y + 7.9, ramp(C.OAK, 0.24))
@@ -644,7 +647,7 @@ def pot_strip(frames=4):
         room.line([(cx - 5.6, 12.8), (cx - 4.2, 8.4), (cx + 4.2, 8.4), (cx + 5.6, 12.8)], ramp(C.IRON, 0.5), 0.45)
         # Steam: soft wisps rising and leaning, each frame a step higher.
         for s in range(3):
-            phase = (k + s * 1.4) / frames
+            phase = ((k + s * 1.4) / frames) % 1.0
             sy = 10.0 - phase * 8.0
             sx = cx - 2.0 + s * 2.2 + 1.4 * math.sin(2 * math.pi * phase + s)
             size = 1.1 + phase * 1.0
@@ -1090,7 +1093,8 @@ def _ladder_chair(back_left):
 # requires its interior_rooms.gd entry to say exactly the same. pieces are
 # ((x, y, w, h, sort_y), painter), the rects and sort lines the engine's
 # floor plans were laid out against, disjoint because the client cuts each
-# sprite from its own pixels; anims (sheet, frames, x, y, sort_y or None);
+# sprite from its own pixels; anims (sheet, frames, fps, x, y, sort_y or
+# None);
 # bar/reach where a sale is set on the desk and where the keeper steps to
 # set it there.
 ROOMS = {
@@ -1104,7 +1108,8 @@ ROOMS = {
             # The table stops where the form begins (the pack's rects
             # overlapped by 8 px).
             ((74, 74, 48, 24, 104), joined_table),
-            ((74, 98, 48, 16, 109), form),
+            # The form's rect ends at the room's bottom edge (y 112).
+            ((74, 98, 48, 14, 109), form),
             # The great chair stops where the desk begins and the basket
             # starts below the desk (the pack's chair and basket overlapped
             # the desk and each other).
@@ -1112,7 +1117,7 @@ ROOMS = {
             ((26, 90, 16, 22, 111), work_basket),
         ],
         "covers": {},
-        "anims": [(FIRE, 4, 96, 38, None), (POT, 4, 66, 50, 81), (CANDLE, 4, 24, 44, 90)],
+        "anims": [(FIRE, 4, 8.0, 96, 38, None), (POT, 4, 5.0, 66, 50, 81), (CANDLE, 4, 6.0, 24, 44, 90)],
     },
     "inn_hall": {
         "sheets": ("inn_hall_common", "inn_hall_pieces"),
@@ -1153,7 +1158,8 @@ DOOR_OPEN_PX = (32, 32)
 
 def entry_extras(key, path=C.ROOMS_GD):
     """What C.room_entry does not read from the room's entry: bar, reach,
-    door_open, and each anim's sort line (None for a wall anim)."""
+    door_open, and every anim record whole, each field read by its key,
+    as (sheet, frames, fps, x, y, sort_y or None)."""
     text = open(path, encoding="utf-8").read()
     body = re.search(r'\n    "%s": \{(.*?)\n    \},' % re.escape(key), text, re.S).group(1)
 
@@ -1162,16 +1168,22 @@ def entry_extras(key, path=C.ROOMS_GD):
         return (int(m.group(1)), int(m.group(2))) if m else None
 
     door = re.search(r'"door_open": "([^"]+)"', body)
-    sorts = [int(v) if v else None for v in re.findall(r'\{"sheet": "[^"]+", [^}]*?(?:"sort_y": (\d+))?\}', body)]
-    return {"bar": point("bar"), "reach": point("reach"), "door_open": door.group(1) if door else None, "anim_sorts": sorts}
+    anims = []
+    block = re.search(r'"anims": \[(.*?)\]', body, re.S)
+    for record in re.findall(r'\{([^{}]*)\}', block.group(1) if block else ""):
+        fields = {k: v.strip('"') for k, v in re.findall(r'"(\w+)": ("[^"]*"|-?[\d.]+)', record)}
+        num = (lambda f, cast: cast(fields[f]) if f in fields else None)
+        anims.append((fields.get("sheet"), num("frames", int), num("fps", float), num("x", int), num("y", int),
+                      num("sort_y", int)))
+    return {"bar": point("bar"), "reach": point("reach"), "door_open": door.group(1) if door else None, "anims": anims}
 
 
 def check(out_dir):
     """Each sheet is exactly what this script paints now and of its size;
     each room's entry in interior_rooms.gd names these sheets at this
     density and says exactly what ROOMS declares: size, pieces (rects and
-    sort lines, in order), covers, anims (sheet, frames, position, sort
-    line), bar, reach and door_open; every cover rect lies inside its bed's
+    sort lines, in order), covers, anims (every field of every record: sheet,
+    frames, fps, position, sort line), bar, reach and door_open; every cover rect lies inside its bed's
     piece and holds the coverlet; every anim strip is whole frames of its
     declared size."""
     ok = True
@@ -1199,8 +1211,9 @@ def check(out_dir):
                 ("size", entry["size"], spec["size"]),
                 ("pieces", entry["pieces"], [r for r, _p in spec["pieces"]]),
                 ("covers", entry["covers"], spec["covers"]),
-                ("anims", entry["anims"], [a[:4] for a in spec["anims"]]),
-                ("anim sort lines", extra["anim_sorts"], [a[4] for a in spec["anims"]]),
+                # Every anim field by its key, so a record's field order does
+                # not matter (C.room_entry's anims depend on it).
+                ("anims", extra["anims"], spec["anims"]),
                 ("bar", extra["bar"], spec.get("bar")),
                 ("reach", extra["reach"], spec.get("reach")),
                 ("door_open", extra["door_open"], res % door if door else None)):
@@ -1222,7 +1235,7 @@ def check(out_dir):
             if not inside or not filled:
                 print("%s: cover %s %s is not a covered part of a bed piece" % (key, bed, (x, y, w, h)))
                 ok = False
-        for path, frames, _x, _y, _sort in spec["anims"]:
+        for path, frames, _fps, _x, _y, _sort in spec["anims"]:
             name = os.path.splitext(os.path.basename(path))[0]
             fw, fh = FRAMES[name]
             if path != res % name or sheets[name].size != (frames * fw * d, fh * d):
