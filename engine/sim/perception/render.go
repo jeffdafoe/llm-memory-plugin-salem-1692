@@ -332,12 +332,16 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// LLM-26: the employer's pending work-offer decisions sit alongside pay
 	// offers (both are "someone wants my answer"); the worker affordance cue
 	// follows so a free worker sees the option to offer their labor.
-	renderLaborOffers(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, p.SubjectProducesGoods, nameOf, p.ItemNouns)
+	renderLaborOffersIdle(&ephemeral, p.LaborOffersForMe, p.Actor.Coins, p.SubjectProducesGoods, p.IdleHand, nameOf, p.ItemNouns)
 	renderLaborAffordance(&ephemeral, p.CanSolicitWork, p.SolicitableEmployers, nameOf)
 	// LLM-346: the hiring-side twin of the affordance above. Sits immediately after
 	// it so the two mints of the labor market read as one pair — offer your labor,
 	// or ask for someone else's.
-	renderOfferWorkAffordance(&ephemeral, p.HireableWorkers, nameOf)
+	offerWorkIdle := p.IdleHand
+	if idleHandInOffers(p.IdleHand, p.LaborOffersForMe) {
+		offerWorkIdle = nil // already said once, by the pending decision above
+	}
+	renderOfferWorkAffordance(&ephemeral, p.HireableWorkers, offerWorkIdle, nameOf)
 	// LLM-152/160: the directional half of seek-work — the town's businesses to head
 	// to, by their resolvable names. Sits with the labor affordance; non-empty
 	// whenever the subject is a broke idle worker with no employer present to solicit
@@ -3926,10 +3930,22 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 // recall (that memory is the employer's), and the pay is something they would
 // RECEIVE, not spend.
 func renderLaborOffers(b *strings.Builder, offers []LaborOfferView, employerCoins int, employerProduces bool, nameOf func(sim.ActorID) string, nouns itemNouns) {
+	renderLaborOffersIdle(b, offers, employerCoins, employerProduces, nil, nameOf, nouns)
+}
+
+// renderLaborOffersIdle is renderLaborOffers with the idle-production line: when
+// a hand has offered to work for the subject and the subject's work has nothing a
+// hand could hurry (idle_hand.go), the line sits under the section header, ahead
+// of the offers it bears on. Worker-side offers (an employer asking the subject
+// to work) never carry it — the stores in question would be the employer's.
+func renderLaborOffersIdle(b *strings.Builder, offers []LaborOfferView, employerCoins int, employerProduces bool, idle *IdleHandView, nameOf func(sim.ActorID) string, nouns itemNouns) {
 	if len(offers) == 0 {
 		return
 	}
 	b.WriteString("## Work offers awaiting your decision\n")
+	if idleHandInOffers(idle, offers) {
+		renderIdleHand(b, idle)
+	}
 	anyAffordable, anyUnaffordable := false, false
 	for i, o := range offers {
 		// The pay may be coins, goods the employer holds, or both (LLM-225) —
@@ -4197,10 +4213,16 @@ func renderLaborAffordance(b *strings.Builder, canSolicit bool, employers []sim.
 // It also warns off the terminal speak, for the reason LLM-343 folded `say` into
 // sell: offer_work and speak both end the tick, so a keeper who voices the request
 // first never reaches the tool, and the offer she just made aloud does not exist.
-func renderOfferWorkAffordance(b *strings.Builder, workers []sim.ActorID, nameOf func(sim.ActorID) string) {
+//
+// The idle-production line (idle_hand.go) leads the cue when a hand could hurry
+// none of the subject's work: the scene first, then the affordance, so the model
+// weighs the hire against it. The tool stays — a hand may still be wanted for
+// something the engine does not measure.
+func renderOfferWorkAffordance(b *strings.Builder, workers []sim.ActorID, idle *IdleHandView, nameOf func(sim.ActorID) string) {
 	if len(workers) == 0 {
 		return
 	}
+	renderIdleHand(b, idle)
 	names := make([]string, 0, len(workers))
 	for _, id := range workers {
 		names = append(names, nameOf(id))

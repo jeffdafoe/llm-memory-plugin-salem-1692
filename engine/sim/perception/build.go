@@ -144,6 +144,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta, 
 	// in render.
 	p.LaborOffersForMe = buildLaborOffersForMe(snap, actorID)
 	p.SubjectProducesGoods = subjectProducesGoods(snap, actorSnap)
+	p.IdleHand = buildIdleHand(snap, actorID, actorSnap)
 	p.WorkersForMe = buildWorkersForMe(snap, actorID)
 	p.Laboring = buildLaboring(snap, actorID)
 	p.LaborEnRoute = buildLaborEnRoute(snap, actorID)

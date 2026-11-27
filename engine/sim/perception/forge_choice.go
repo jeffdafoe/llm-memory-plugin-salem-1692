@@ -144,21 +144,10 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		if recipe == nil || recipe.RateQty <= 0 || recipe.RatePerHours <= 0 {
 			continue
 		}
-		batchQty := recipe.OutputQty
-		if batchQty < 1 {
-			batchQty = 1
-		}
-		// Craftability filter (LLM-324): mirror craftableNow's two snapshot-visible
-		// axes — a whole batch must fit under the carry cap AND the inputs must be on
-		// hand (the same HasProduceInputs the tool consumes on). makeableRecipe, its
-		// third axis, is the recipe-validity continue above. The cap headroom is
-		// computed DIRECTLY (batchFitsCap: uncapped, else onHand+batch <= cap), NOT
-		// read off stockTier — stockTier short-circuits to StockEmpty at zero on hand,
-		// which would hide a batch larger than the whole cap (batchQty > cap) and
-		// wrongly list a good the tool rejects (code_review). A capped or input-short
-		// good is dropped so it never enters the menu that advertises the produce tool.
-		fitsCap := e.Cap() <= 0 || actorSnap.Inventory[e.Item]+batchQty <= e.Cap()
-		inputsReady := sim.HasProduceInputs(recipe, actorSnap.Inventory)
+		// Craftability filter (LLM-324): a capped or input-short good is dropped so it
+		// never enters the menu that advertises the produce tool. produceBatchReady is
+		// the shared test (the idle-hand line reads it too).
+		batchQty, fitsCap, inputsReady := produceBatchReady(actorSnap, e, recipe)
 		if !fitsCap || !inputsReady {
 			continue
 		}
@@ -200,6 +189,29 @@ func buildForgeChoice(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Ac
 		return items[i].itemKind < items[j].itemKind
 	})
 	return &ForgeChoiceView{Items: items}
+}
+
+// produceBatchReady is the per-good batch-readiness test the "## Your trade" menu
+// (buildForgeChoice) and the idle-hand line (buildIdleHand) share, so the two can
+// never disagree on whether a batch of a good could start right now. It returns
+// the batch size (OutputQty floored at 1) and the two axes.
+//
+// It mirrors craftableNow's two snapshot-visible axes — a whole batch must fit
+// under the carry cap AND the inputs must be on hand (the same HasProduceInputs
+// the tool consumes on). makeableRecipe, its third axis, is the caller's
+// recipe-validity check. The cap headroom is computed DIRECTLY (batchFitsCap:
+// uncapped, else onHand+batch <= cap), NOT read off stockTier — stockTier
+// short-circuits to StockEmpty at zero on hand, which would hide a batch larger
+// than the whole cap (batchQty > cap) and wrongly list a good the tool rejects
+// (code_review).
+func produceBatchReady(actorSnap *sim.ActorSnapshot, e sim.RestockEntry, recipe *sim.ItemRecipe) (batchQty int, fitsCap, inputsReady bool) {
+	batchQty = recipe.OutputQty
+	if batchQty < 1 {
+		batchQty = 1
+	}
+	fitsCap = e.Cap() <= 0 || actorSnap.Inventory[e.Item]+batchQty <= e.Cap()
+	inputsReady = sim.HasProduceInputs(recipe, actorSnap.Inventory)
+	return batchQty, fitsCap, inputsReady
 }
 
 // standingShortage finds the longest-standing entry for `item` in the LLM-656
