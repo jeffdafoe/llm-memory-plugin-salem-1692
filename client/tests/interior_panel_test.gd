@@ -4645,9 +4645,12 @@ func _test_painted_room_density() -> void:
     _check("a tap on someone seated over the furniture finds them", str(_panel.thing_at(_at_art(tap)).get("id", "")), "abel")
     _panel.close()
     _clear_people()
-    # A pack room (the Inn's common room) is still drawn one to one.
-    _panel.open(INN)
-    _check("a pack room: the background one to one", _panel._background.scale, Vector2.ONE)
+    # A room with no density (a pack room) is drawn one to one. Every room in
+    # InteriorRooms may be painted by now, so the room is made up here.
+    _panel.room = {"sheet": "/tilesets/interiors/a_pack_room.png", "size": Vector2i(128, 112)}
+    _panel._apply_textures()
+    _check("a room with no density: the background one to one", _panel._background.scale, Vector2.ONE)
+    _panel.room = {}
     _panel.close()
     _panel.texture_hook = t_hook
     _done()
