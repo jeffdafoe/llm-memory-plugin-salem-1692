@@ -1013,7 +1013,7 @@ def trunk(room, x, y, w, h, rnd):
     hide over pine, the domed lid's top, brass nails along its edges, iron
     bands, a lock plate and a hasp, a leather handle at the end."""
     lid = y + 6.5
-    room.d.rounded_rectangle((x * C.S, (y + 0.6) * C.S, (x + w) * C.S, (lid + 1.0) * C.S),
+    room.d.rounded_rectangle((x * C.S, (y + 0.6) * C.S, (x + w) * C.S - 1, (lid + 1.0) * C.S),
                              radius=int(2.8 * C.S), fill=ramp(LEATHER, 0.62))
     room.rect(x + 1.0, y + 1.2, x + w - 1.0, y + 2.4, ramp(LEATHER, 0.88))
     room.rect(x, lid, x + w, y + h - 0.6, ramp(LEATHER, 0.42))
@@ -1202,12 +1202,34 @@ def anim_fields(record):
     return fields
 
 
+def canvas_spill(key, seeds=(1, 2, 3)):
+    """Pieces of the room whose painter lays a solid stroke (alpha 128 or
+    more) outside its rect on the canvas before the shrink, for any of
+    `seeds`. C.paint_pieces checks the shrunk art, where a stroke on the one
+    canvas row just past a rect (Pillow's inclusive rectangle ends) averages
+    away but still leaves a faint row at the client's crop edge."""
+    spec, pad, bad = ROOMS[key], C.PIECE_PAD, []
+    w, h = spec["size"]
+    for (x, y, pw, ph, _s), painter in spec["pieces"]:
+        for seed in seeds:
+            room = C.Room(w + 2 * pad, h + 2 * pad)
+            painter(room, x + pad, y + pad, pw, ph, random.Random(seed))
+            solid = room.lay.split()[3].point(lambda a: 255 if a >= 128 else 0)
+            solid.paste(0, tuple(int(round(v * C.S)) for v in (x + pad, y + pad, x + pad + pw, y + pad + ph)))
+            if solid.getbbox() is not None:
+                bad.append((x, y, pw, ph))
+                break
+    return bad
+
+
 def check(out_dir):
     """Each sheet is exactly what this script paints now and of its size;
     each room's entry in interior_rooms.gd names these sheets at this
     density and says exactly what ROOMS declares: size, pieces (rects and
     sort lines, in order), covers, anims (every field of every record: sheet,
-    frames, fps, position, sort line), bar, reach and door_open; every cover rect lies inside its bed's
+    frames, fps, position, sort line), bar, reach and door_open; no piece
+    lays a solid stroke outside its rect even on the canvas; every cover
+    rect lies inside its bed's
     piece and holds the coverlet; every anim strip is whole frames of its
     declared size."""
     ok = True
@@ -1256,6 +1278,9 @@ def check(out_dir):
                 ok = False
         if door and sheets[door].size != (DOOR_OPEN_PX[0] * d, DOOR_OPEN_PX[1] * d):
             print("%s: %s is not %s room px at density %d" % (key, door, DOOR_OPEN_PX, d))
+            ok = False
+        for rect in canvas_spill(key):
+            print("%s: piece %s paints a solid stroke outside its rect on the canvas" % (key, rect))
             ok = False
         alpha = sheets[pieces].split()[3]
         for bed, (x, y, w, h) in spec["covers"].items():
