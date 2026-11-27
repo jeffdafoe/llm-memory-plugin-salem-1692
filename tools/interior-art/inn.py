@@ -1204,19 +1204,18 @@ def anim_fields(record):
 
 def canvas_spill(key, seeds=(1, 2, 3)):
     """Pieces of the room whose painter lays a solid stroke (alpha 128 or
-    more) outside its rect on the canvas before the shrink, for any of
-    `seeds`. C.paint_pieces checks the shrunk art, where a stroke on the one
-    canvas row just past a rect (Pillow's inclusive rectangle ends) averages
-    away but still leaves a faint row at the client's crop edge."""
+    more) outside its rect on the canvas before the shrink (C.solid_outside),
+    for any of `seeds`. C.paint_pieces checks the canvas of the seed the
+    room is painted with; this sweep guards the painters against a change
+    of seed."""
     spec, pad, bad = ROOMS[key], C.PIECE_PAD, []
     w, h = spec["size"]
     for (x, y, pw, ph, _s), painter in spec["pieces"]:
         for seed in seeds:
             room = C.Room(w + 2 * pad, h + 2 * pad)
             painter(room, x + pad, y + pad, pw, ph, random.Random(seed))
-            solid = room.lay.split()[3].point(lambda a: 255 if a >= 128 else 0)
-            solid.paste(0, tuple(int(round(v * C.S)) for v in (x + pad, y + pad, x + pad + pw, y + pad + ph)))
-            if solid.getbbox() is not None:
+            if C.solid_outside(room.lay, tuple(int(round(v * C.S)) for v in (x + pad, y + pad, x + pad + pw,
+                                                                             y + pad + ph))) is not None:
                 bad.append((x, y, pw, ph))
                 break
     return bad
@@ -1233,6 +1232,11 @@ def check(out_dir):
     piece and holds the coverlet; every anim strip is whole frames of its
     declared size."""
     ok = True
+    # The kit's own guards (common.selftest): a removed guard would leave
+    # every sheet unchanged, so the sheets alone cannot show it.
+    for f in C.selftest():
+        print("common selftest: " + f)
+        ok = False
     sheets = {}
     for name, build in SHEETS.items():
         sheet = Image.open(os.path.join(out_dir, name + ".png")).convert("RGBA")

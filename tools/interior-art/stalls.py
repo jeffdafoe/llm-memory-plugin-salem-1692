@@ -1034,6 +1034,11 @@ def check(out_dir):
     (counter_for's rule) and the bellows are painted here; the goods sheet
     holds every good's two cells, each good within the tap box's rows."""
     ok = True
+    # The kit's own guards (common.selftest): a removed guard would leave
+    # every sheet unchanged, so the sheets alone cannot show it.
+    for f in C.selftest():
+        print("common selftest: " + f)
+        ok = False
     for f in selftest():
         print("selftest: " + f)
         ok = False

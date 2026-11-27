@@ -1305,27 +1305,6 @@ def _entry_anims(body):
     return anims
 
 
-def canvas_spill(key):
-    """The room's painted rects (the bar's arms as one) whose painter lays a
-    solid stroke (alpha 128 or more) outside the rect on the canvas before
-    the shrink. paint_pieces checks the shrunk art, where a stroke on the
-    canvas row just past a rect can average away and still leave a faint row
-    at the client's crop edge; this catches it. A faint glow past the rect
-    is allowed: the shrink drops it. Returns [(rect, bbox of the spill in
-    room px)]."""
-    spec, pad, bad = ROOMS[key], C.PIECE_PAD, []
-    w, h = spec["size"]
-    for (x, y, pw, ph), painter in piece_groups(spec["pieces"]):
-        room = C.Room(w + 2 * pad, h + 2 * pad)
-        painter(room, x + pad, y + pad, pw, ph, random.Random(1))
-        solid = room.lay.split()[3].point(lambda a: 255 if a >= 128 else 0)
-        solid.paste(0, tuple(int(round(v * C.S)) for v in (x + pad, y + pad, x + pad + pw, y + pad + ph)))
-        box = solid.getbbox()
-        if box is not None:
-            bad.append(((x, y, pw, ph), tuple(round(v / C.S - pad, 2) for v in box)))
-    return bad
-
-
 def check(out_dir):
     """Each sheet is exactly what this script paints now and of its size;
     each room's entry in interior_rooms.gd names these sheets (and the
@@ -1338,10 +1317,11 @@ def check(out_dir):
     the closed one whole; each anim strip is its declared frames of its
     declared size; the bar's sale point is on the counter."""
     ok = True
-    for key in ROOMS:
-        for rect, spill in canvas_spill(key):
-            print("%s: the piece %s paints past its rect on the canvas, at %s (room px)" % (key, rect, spill))
-            ok = False
+    # The kit's own guards (common.selftest): a removed guard would leave
+    # every sheet unchanged, so the sheets alone cannot show it.
+    for f in C.selftest():
+        print("common selftest: " + f)
+        ok = False
     # The grouping refuses the bar's split moved a pixel either way (an
     # overlap, a gap between the arms) and a collapsed arm.
     bar = ROOMS[COMMON_KEY]["pieces"]
