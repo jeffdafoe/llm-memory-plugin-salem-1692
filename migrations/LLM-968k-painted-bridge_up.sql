@@ -26,7 +26,8 @@
 -- the up refuses if another object's footprint lies under a new deck. It
 -- also refuses on any other Bridge placement, or a known one attached,
 -- promoted to a structure, moved off its tile or onto another asset: only
--- these three crossings were checked.
+-- these three crossings were checked. It refuses too if one of the three is
+-- missing.
 --
 -- The asset is set, then checked exactly (columns, its one state, no tags,
 -- lights or slots) along with the placements; any difference fails the
@@ -56,9 +57,15 @@ BEGIN
         ('019d79ef-d9df-7ce4-a994-3abe29ec4dad', 63, 23, 63, 22),      -- B
         ('019da672-2094-7a92-9cac-93fd3ee09cd9', 65, -27, 64, -27);    -- C
 
-    -- Refuse before writing anything: a Bridge placement that is not one of
-    -- the three on its tile (old or, on a rerun, new), one of the three on
-    -- another asset, or one of the three not a bare object.
+    -- Refuse before writing anything: one of the three missing (the checks
+    -- below, the deck guard among them, assume all three crossings get
+    -- their bridge), a Bridge placement that is not one of the three on its
+    -- tile (old or, on a rerun, new), one of the three on another asset, or
+    -- one of the three not a bare object.
+    SELECT count(*) INTO bad FROM llm968k_place p WHERE NOT EXISTS (SELECT 1 FROM village_object o WHERE o.id = p.id);
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'LLM-968k: % of the three bridges missing', bad;
+    END IF;
     SELECT count(*) INTO bad FROM village_object o
      WHERE o.asset_id = bridge
        AND NOT EXISTS (SELECT 1 FROM llm968k_place p

@@ -23,6 +23,7 @@ trestle bridges.
 import argparse
 import os
 import random
+import re
 import sys
 
 from PIL import Image, ImageDraw
@@ -162,19 +163,29 @@ MIGRATION = os.path.join(B.ROOT, "migrations", "LLM-968k-painted-bridge_up.sql")
 
 def migration_problems(path=MIGRATION):
     """The migration must write this script's anchor fraction, footprint and
-    frame rect, in both its update and its check."""
-    text = " ".join(open(path, encoding="utf-8").read().split())
+    frame rect: in its asset and state updates, and in the postcondition
+    checks after them. Comments are dropped first, so a stale comment can't
+    stand in for the SQL."""
+    sql = re.sub(r"--[^\n]*", "", open(path, encoding="utf-8").read())
+    sql = " ".join(sql.split())
     fw, fh, _ = FRAMES["bridge"]
+    asset_update = re.search(r"UPDATE asset SET (.*?) WHERE id = bridge;", sql)
+    state_update = re.search(r"UPDATE asset_state SET (.*?) WHERE asset_id = bridge AND state = 'default';", sql)
+    if not asset_update or not state_update:
+        return ["the migration's asset or state update is not where expected"]
+    checks = sql[state_update.end():]
     want = [
-        "anchor_x = %.1f::double precision / %d, anchor_y = %.1f::double precision / %d"
-        % (ANCHOR[0], FRAME[0], ANCHOR[1], FRAME[1]),
-        "footprint_left = %d, footprint_right = %d, footprint_top = %d, footprint_bottom = %d" % FOOTPRINT,
-        "sheet = 'res://assets/trees/bridge.png', src_x = 0, src_y = 0, src_w = %d, src_h = %d" % (fw, fh),
-        "%.1f::double precision / %d, %.1f::double precision / %d, %d, %d, %d, %d,"
-        % ((ANCHOR[0], FRAME[0], ANCHOR[1], FRAME[1]) + FOOTPRINT),
-        "'res://assets/trees/bridge.png'::text, 0, 0, %d, %d, 1," % (fw, fh),
+        (asset_update.group(1), "anchor_x = %.1f::double precision / %d, anchor_y = %.1f::double precision / %d"
+         % (ANCHOR[0], FRAME[0], ANCHOR[1], FRAME[1])),
+        (asset_update.group(1), "footprint_left = %d, footprint_right = %d, footprint_top = %d, footprint_bottom = %d"
+         % FOOTPRINT),
+        (state_update.group(1), "sheet = 'res://assets/trees/bridge.png', src_x = 0, src_y = 0, src_w = %d, src_h = %d"
+         % (fw, fh)),
+        (checks, "%.1f::double precision / %d, %.1f::double precision / %d, %d, %d, %d, %d,"
+         % ((ANCHOR[0], FRAME[0], ANCHOR[1], FRAME[1]) + FOOTPRINT)),
+        (checks, "'res://assets/trees/bridge.png'::text, 0, 0, %d, %d, 1," % (fw, fh)),
     ]
-    return ["the migration does not write: %s" % w for w in want if w not in text]
+    return ["the migration does not write: %s" % w for scope, w in want if w not in scope]
 
 
 def check(out_dir):
