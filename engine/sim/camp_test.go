@@ -21,7 +21,7 @@ func campAssets() map[sim.AssetID]*sim.Asset {
 	return map[sim.AssetID]*sim.Asset{
 		sim.TentAssetID: {
 			ID: sim.TentAssetID, Name: "Tent", Category: "structure", DefaultState: sim.TentStateClosed,
-			IsObstacle: true, FootprintLeft: 1, FootprintRight: 2, FootprintTop: 3,
+			IsObstacle: true, FootprintLeft: 1, FootprintRight: 1, FootprintTop: 2,
 			DoorOffsetX: &zero, DoorOffsetY: &zero,
 			States: []sim.AssetState{
 				{ID: 1, State: sim.TentStatePacked},
