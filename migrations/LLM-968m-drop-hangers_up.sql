@@ -13,7 +13,8 @@
 --
 -- All or nothing, so the down reverses it exactly. The catalog must be either
 -- exactly the production snapshot (2026-11-27) for these rows (compared both
--- ways, typed, with the state tags and lights), or already migrated (neither
+-- ways, typed, with the state tags and lights) with Outhouse 1 here (the
+-- down's sign of the village catalog), or already migrated (neither
 -- here; a fresh database, which has no catalog, is this case and nothing
 -- happens). Anything in between fails the migration rather than lose a row
 -- the down cannot bring back.
@@ -62,6 +63,7 @@ LOCK TABLE asset, asset_state, asset_state_tag, asset_state_light, asset_slot, a
 
 DO $$
 DECLARE
+    outhouse CONSTANT uuid := '053ec0f2-79bd-4db6-a9df-fec642792244';
     bad integer;
     what text;
 BEGIN
@@ -86,6 +88,11 @@ BEGIN
             RAISE EXCEPTION 'LLM-968m: the catalog is partly migrated (hanger states are here without their assets)';
         END IF;
         RETURN;
+    END IF;
+    -- The down restores only where Outhouse 1 shows the village catalog is
+    -- here; without it the down could not bring these rows back.
+    IF NOT EXISTS (SELECT 1 FROM asset WHERE id = outhouse) THEN
+        RAISE EXCEPTION 'LLM-968m: Outhouse 1 is not here, so the down could not bring the hangers back';
     END IF;
 
     FOR what IN SELECT unnest(ARRAY['asset', 'state', 'tag', 'light']) LOOP

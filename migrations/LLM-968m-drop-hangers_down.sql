@@ -60,6 +60,16 @@ BEGIN
         IF EXISTS (SELECT 1 FROM llm968m_state_now) THEN
             RAISE EXCEPTION 'LLM-968m down: the catalog is partly migrated (hanger states are here without their assets)';
         END IF;
+        -- No foreign key keeps a row from pointing at a hanger's id while it
+        -- is gone; restoring the id would silently bring such a row to life.
+        SELECT count(*) INTO bad FROM village_object WHERE asset_id IN (SELECT id FROM llm968m_asset);
+        IF bad > 0 THEN
+            RAISE EXCEPTION 'LLM-968m down: % placement(s) point at a dropped hanger', bad;
+        END IF;
+        SELECT count(*) INTO bad FROM asset_slot WHERE asset_id IN (SELECT id FROM llm968m_asset);
+        IF bad > 0 THEN
+            RAISE EXCEPTION 'LLM-968m down: % slot(s) point at a dropped hanger', bad;
+        END IF;
         INSERT INTO asset (id, name, category, default_state, anchor_x, anchor_y, layer, created_at, pack_id, interior, fits_slot, source_file, rotation_algo, transition_spread_seconds, is_obstacle, is_passage, z_index, footprint_left, footprint_right, footprint_top, footprint_bottom, door_offset_x, door_offset_y, visible_when_inside, stand_offset_x, stand_offset_y, occupied_min_count, occupied_night_only, render_scale) SELECT * FROM llm968m_asset;
         INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate, created_at) SELECT * FROM llm968m_state;
     END IF;
