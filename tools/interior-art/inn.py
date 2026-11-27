@@ -56,16 +56,18 @@ BRASS = ["3e2a0e", "624416", "8a6220", "b08430", "d0a84a", "ecd07a"]
 STONEWARE = ["2e261c", "4a3e2e", "6a5a42", "8c7a5a", "ae9c78", "ccbc96"]
 # A traveller's trunk, hide over pine.
 LEATHER = ["1e120a", "321e10", "4a2e18", "623e22", "7c5230"]
+# The guest bed's coverlet: madder gone soft and brown with washing.
+FADED = ["3a201a", "4e2c22", "62382a", "744634", "86563e"]
 
 ROOM_PALETTE = C.ROOM_PALETTE + PAINT + BRASS
-PIECE_PALETTE = C.PIECE_PALETTE + PAINT + BRASS + STONEWARE + LEATHER + C.HERB
+PIECE_PALETTE = C.PIECE_PALETTE + PAINT + BRASS + STONEWARE + LEATHER + C.HERB + FADED
 POT_PALETTE = C.IRON + C.FIRE + C.SOOT + C.STONE + C.OAK + C.LINEN + C.PEWTER
 CANDLE_PALETTE = BRASS + C.LINEN + C.FIRE + C.SOOT
 
 
 # ---------------------------------------------------------------- shared painters
 
-def turned(room, cx, y0, y1, r, tone=0.55, cols=None, profile=None):
+def turned(room, cx, y0, y1, r, tone=0.55, cols=None, profile=None, lit=0.24):
     """A turned post seen from the side, centre cx from y0 to y1: its width
     follows `profile`, (t, fraction of r) points down its length (a vase and
     rings by default), lit on the left, shaded on the right."""
@@ -82,7 +84,7 @@ def turned(room, cx, y0, y1, r, tone=0.55, cols=None, profile=None):
         hw = max(0.3, r * f)
         y = y0 + i / 4
         room.rect(cx - hw, y, cx + hw, y + 0.25, ramp(cols, tone))
-        room.rect(cx - hw, y, cx - hw * 0.35, y + 0.25, ramp(cols, tone + 0.24))
+        room.rect(cx - hw, y, cx - hw * 0.35, y + 0.25, ramp(cols, tone + lit))
         room.rect(cx + hw * 0.45, y, cx + hw, y + 0.25, ramp(cols, tone - 0.22))
 
 
@@ -145,12 +147,12 @@ def rates_paper(room, x0, y0, x1, y1):
     room.rect(x0, y0, x1, y1, ramp(C.LINEN, 0.82))
     room.rect(x0, y0, x0 + 0.5, y1, ramp(C.LINEN, 0.95))
     room.rect(x1 - 0.5, y0 + 1, x1, y1, ramp(C.LINEN, 0.6))
-    room.rect(x0 + 1.5, y0 + 1.3, x1 - 1.5, y0 + 2.0, ramp(C.SOOT, 0.6))
-    y = y0 + 3.2
+    room.rect(x0 + 1.5, y0 + 1.3, x1 - 1.5, y0 + 2.3, ramp(C.TIMBER, 0.1))
+    y = y0 + 3.6
     k = 0
-    while y < y1 - 1.0:
-        room.rect(x0 + 1.0, y, x1 - 1.0 - (k % 3) * 0.8, y + 0.4, ramp(C.LINEN, 0.32))
-        y += 1.3
+    while y < y1 - 1.2:
+        room.rect(x0 + 1.0, y, x1 - 1.0 - (k % 3) * 1.0, y + 0.55, ramp(C.TIMBER, 0.2))
+        y += 1.7
         k += 1
     for tx in (x0 + 0.6, x1 - 1.1):
         room.rect(tx, y0 + 0.4, tx + 0.6, y0 + 1.0, ramp(C.IRON, 0.3))
@@ -231,6 +233,73 @@ def stair_up(room, x0, x1, foot, top, steps, rnd):
     room.ellipse(nx - 0.8, ny - 2.2, nx + 0.2, ny - 1.2, ramp(C.OAK, 0.98))
 
 
+def inn_hearth(room, x0, x1, top, wall_bottom, fire_box, rnd):
+    """The common room's hearth, wider than a home's: a breast of fieldstone
+    laid up rough, stones of every size with uneven seams; a deep mouth
+    under an oak lintel, its cheeks splaying in to the sooty back (the right
+    cheek lit by the fire); a trammel and pot; a stone apron and fire irons.
+    fire_box (x, y, w, h) is where the fire strip plays."""
+    fx, fy, fw, fh = fire_box
+    room.rect(x0, top, x1, wall_bottom, ramp(C.MORTAR, 0.45))
+    y = wall_bottom
+    while y > top + 0.5:
+        row = rnd.uniform(3.0, 6.5)
+        x = x0 - rnd.uniform(0, 4)
+        while x < x1:
+            sw = rnd.choice((rnd.uniform(3, 5), rnd.uniform(5, 8), rnd.uniform(8, 12)))
+            sh = row * rnd.uniform(0.7, 1.0) + (rnd.uniform(1.5, 3.5) if rnd.random() < 0.2 else 0)
+            a, b = max(x0, x + 0.35), min(x1, x + sw - 0.35)
+            s1 = y - 0.35 - rnd.uniform(0, 0.5)
+            s0 = max(top, s1 - sh + 0.4)
+            if b - a > 1.0 and s1 - s0 > 1.0:
+                tone = 0.5 + rnd.uniform(-0.2, 0.18)
+                r = int(min(b - a, s1 - s0) * 0.35 * C.S)
+                room.d.rounded_rectangle((a * C.S, s0 * C.S, b * C.S, s1 * C.S), radius=r, fill=ramp(C.STONE, tone))
+                room.speckle(a + 0.5, s0 + 0.6, b - 0.5, s1 - 0.6, (b - a) * (s1 - s0) / 2.5, C.STONE,
+                             (tone - 0.14, tone + 0.12), rnd, (0.25, 0.5))
+                room.d.rounded_rectangle((a * C.S, s0 * C.S, b * C.S, (s0 + 0.8) * C.S), radius=int(0.4 * C.S),
+                                         fill=ramp(C.STONE, tone + 0.26))
+                room.rect(a, s0 + 0.5, a + 0.5, s1 - 0.6, ramp(C.STONE, tone + 0.16))
+                room.rect(b - 0.6, s0 + 0.8, b, s1, ramp(C.STONE, tone - 0.26))
+                room.rect(a + 0.4, s1 - 0.7, b - 0.2, s1, ramp(C.STONE, tone - 0.24))
+            x += sw
+        y -= row
+    soot = Image.new("L", room.lay.size, 0)
+    ImageDraw.Draw(soot).ellipse(((fx - 3) * C.S, (top - 4) * C.S, (fx + fw + 3) * C.S, (fy + 2) * C.S), fill=110)
+    room.lay.paste(Image.new("RGBA", room.lay.size, C.B.rgb(C.SOOT[1])), (0, 0), soot.filter(ImageFilter.GaussianBlur(3 * C.S)))
+    # The mouth: splayed cheeks in to the sooty back.
+    room.rect(fx - 1.5, fy, fx + fw + 1.5, fy + fh, ramp(C.SOOT, 0.1))
+    room.poly([(fx - 1.5, fy), (fx + 2.2, fy + 2.6), (fx + 2.2, fy + fh - 1.6), (fx - 1.5, fy + fh)], ramp(C.STONE, 0.24))
+    room.poly([(fx + fw + 1.5, fy), (fx + fw - 2.2, fy + 2.6), (fx + fw - 2.2, fy + fh - 1.6), (fx + fw + 1.5, fy + fh)],
+              ramp(C.STONE, 0.4))
+    room.rect(fx + 2.2, fy + 2.6, fx + fw - 2.2, fy + fh - 1.6, ramp(C.SOOT, 0.02))
+    room.rect(fx - 1.5, fy + fh - 1.6, fx + fw + 1.5, fy + fh, ramp(C.STONE, 0.18))
+    C.timber(room, fx - 4.0, fy - 3.8, fx + fw + 4.0, fy, 0.45, rnd)
+    room.rect(fx - 1.5, fy, fx + fw + 1.5, fy + 0.8, ramp(C.SOOT, 0.0))
+    tx = fx + fw / 2
+    room.rect(tx - 0.35, fy, tx + 0.35, fy + 4.2, ramp(C.IRON, 0.45))
+    for k in range(4):
+        room.rect(tx + 0.35, fy + 0.6 + k, tx + 0.8, fy + 1.0 + k, ramp(C.IRON, 0.6))
+    room.ellipse(tx - 2.8, fy + 4.0, tx + 2.8, fy + 8.2, ramp(C.IRON, 0.2))
+    room.ellipse(tx - 2.2, fy + 4.4, tx - 0.4, fy + 6.0, ramp(C.IRON, 0.6))
+    room.line([(tx - 2.6, fy + 4.6), (tx, fy + 3.4), (tx + 2.6, fy + 4.6)], ramp(C.IRON, 0.5), 0.3)
+    # The stone apron: big flat slabs on the floor.
+    ax0, ax1 = fx - 6, fx + fw + 6
+    room.rect(ax0 - 0.6, wall_bottom, ax1 + 0.6, wall_bottom + 6.4, ramp(C.STONE, 0.12))
+    sx = ax0
+    while sx < ax1:
+        sw = min(ax1 - sx, rnd.uniform(6, 10))
+        tone = 0.6 + rnd.uniform(-0.08, 0.08)
+        room.rect(sx + 0.2, wall_bottom, sx + sw - 0.2, wall_bottom + 5.8, ramp(C.STONE, tone))
+        room.rect(sx + 0.2, wall_bottom, sx + sw - 0.2, wall_bottom + 0.9, ramp(C.STONE, tone + 0.22))
+        room.speckle(sx + 0.6, wall_bottom + 1.2, sx + sw - 0.6, wall_bottom + 5.2, sw * 2, C.STONE,
+                     (tone - 0.12, tone + 0.1), rnd)
+        sx += sw
+    room.line([(ax1 - 1.0, wall_bottom - 10), (ax1 + 0.4, wall_bottom + 1.0)], ramp(C.IRON, 0.45), 0.4)
+    room.line([(ax1 + 0.6, wall_bottom - 9), (ax1 + 1.4, wall_bottom + 1.0)], ramp(C.IRON, 0.35), 0.4)
+    room.ellipse(ax1 - 2.0, wall_bottom - 10.8, ax1 + 0.2, wall_bottom - 9.4, ramp(C.IRON, 0.6))
+
+
 def common_room(seed=1692):
     """The Inn's entry hall and common room, 128 x 112: the back wall (rows
     0-2), the stair up at the left, the casement, the hearth at the right;
@@ -248,31 +317,36 @@ def common_room(seed=1692):
     for px in (44, 80):
         C.timber(room, px, 0, px + 4, wall - 2, 0.4, rnd)
     C.casement(room, 54, 13, 70, 27)
-    rates_paper(room, 72, 13, 79, 25)
+    rates_paper(room, 71.4, 11.5, 79.4, 27)
     C.wear(room, 50, 100, 18, 10, 46)
     C.wear(room, 66, 104, 10, 8, 30)
     C.light_pool(room, 54, wall + 1, 70, wall + 20, 70)
     C.wall_foot(room, 0, w, wall)
-    C.hearth(room, 84, 127, 0, wall, (96, 38, 16, 16), rnd)
-    # A mantel board on the breast with the house's pewter.
-    C.shelf(room, 88, 123, 31, rnd, ("plate", "jug", "plate", "plate", "jug"))
+    inn_hearth(room, 84, 127, 0, wall, (96, 38, 16, 16), rnd)
+    # A mantel board on the breast with the house's pewter, its shadow on
+    # the stone under it.
+    room.rect(87, 32.6, 124, 34.4, ramp(C.SOOT, 0.3))
+    C.shelf(room, 87, 124, 31, rnd, ("plate", "jug", "plate", "plate", "jug"))
+    room.rect(87, 31, 124, 31.5, ramp(C.OAK, 0.98))
     stair_up(room, 0, 40, 58, 0, 11, rnd)
-    # The hearthstone the brazier stands on.
-    room.rect(67.4, 73.4, 97.4, 83.4, ramp(C.STONE, 0.1))
-    room.rect(67, 73, 97, 82.6, ramp(C.STONE, 0.56))
-    room.rect(67, 73, 97, 73.8, ramp(C.STONE, 0.78))
-    room.speckle(67.6, 74.2, 96.4, 82, 70, C.STONE, (0.44, 0.66), rnd)
-    room.line([(78, 73.4), (80, 82.4)], ramp(C.STONE, 0.3), 0.3)
-    # Shadows: the desk, table, form, chair, basket; the stair on the wall.
-    for x0, y0, x1, y1 in ((21, 86, 70, 91), (75, 101, 124, 107), (75, 109, 124, 113), (2, 103, 26, 109),
-                           (28, 107, 43, 112)):
-        room.shadow(x0, y0, x1, y1, 220)
+    # The hearthstone the brazier stands on, clear of the desk.
+    room.rect(74.4, 74.4, 99.4, 84.4, ramp(C.STONE, 0.05))
+    room.rect(74, 74, 99, 83.6, ramp(C.STONE, 0.5))
+    room.rect(74, 74, 99, 74.8, ramp(C.STONE, 0.74))
+    room.speckle(74.6, 75.2, 98.4, 83, 60, C.STONE, (0.38, 0.6), rnd)
+    room.line([(85, 74.4), (86.4, 83.4)], ramp(C.STONE, 0.25), 0.3)
+    # Shadows, cast down and right: the desk, table, form, chair, basket.
+    for x0, y0, x1, y1 in ((23, 86, 72, 92), (77, 101, 126, 108), (77, 109, 126, 113), (3, 103, 27, 109),
+                           (30, 107, 45, 112)):
+        room.shadow(x0, y0, x1, y1, 235)
     return C.shrink(room, ROOM_PALETTE)
 
 
 def bellarmine(room, cx, base):
     """A salt-glazed stoneware jug, its foot at (cx, base): a round belly,
     the narrow neck, a loop handle, the bearded mask on its shoulder."""
+    room.ellipse(cx - 3.8, base - 7.8, cx + 3.8, base + 0.6, ramp(STONEWARE, 0.0))
+    room.rect(cx - 1.6, base - 11.2, cx + 1.6, base - 6.0, ramp(STONEWARE, 0.0))
     room.ellipse(cx - 3.2, base - 7.2, cx + 3.2, base, ramp(STONEWARE, 0.42))
     room.ellipse(cx - 2.6, base - 6.6, cx - 0.4, base - 3.2, ramp(STONEWARE, 0.72))
     room.ellipse(cx + 1.2, base - 5.6, cx + 3.0, base - 0.8, ramp(STONEWARE, 0.22))
@@ -298,15 +372,15 @@ def tankard(room, cx, base):
 def ledger(room, x0, y0, x1, y1):
     """An open account book lying on the desk: calf boards, two pages of
     reckonings, the gutter."""
-    room.rect(x0 - 0.5, y0 - 0.3, x1 + 0.5, y1 + 0.5, ramp(LEATHER, 0.45))
+    room.rect(x0 - 0.8, y0 - 0.5, x1 + 0.8, y1 + 0.9, ramp(LEATHER, 0.15))
     mid = (x0 + x1) / 2
-    room.rect(x0, y0, mid - 0.2, y1, ramp(C.LINEN, 0.86))
-    room.rect(mid + 0.2, y0, x1, y1, ramp(C.LINEN, 0.78))
+    room.rect(x0, y0, mid - 0.2, y1, ramp(C.LINEN, 0.95))
+    room.rect(mid + 0.2, y0, x1, y1, ramp(C.LINEN, 0.84))
     room.rect(mid - 0.3, y0, mid + 0.3, y1, ramp(C.LINEN, 0.4))
     for k in range(int((y1 - y0 - 1.2) / 1.2)):
         yy = y0 + 1.0 + k * 1.2
-        room.rect(x0 + 0.7, yy, mid - 1.0 - (k % 2) * 1.2, yy + 0.35, ramp(C.LINEN, 0.32))
-        room.rect(mid + 0.8, yy, x1 - 0.8 - ((k + 1) % 3) * 0.8, yy + 0.35, ramp(C.LINEN, 0.3))
+        room.rect(x0 + 0.7, yy, mid - 1.0 - (k % 2) * 1.2, yy + 0.5, ramp(C.TIMBER, 0.3))
+        room.rect(mid + 0.8, yy, x1 - 0.8 - ((k + 1) % 3) * 0.8, yy + 0.5, ramp(C.TIMBER, 0.3))
 
 
 def keeper_desk(room, x, y, w, h, rnd):
@@ -319,21 +393,21 @@ def keeper_desk(room, x, y, w, h, rnd):
     top0, top1 = y + 4, y + 18
     fy0, fy1 = top1 + 2.4, y + h - 3.2
     # The top, two boards front and back.
-    room.rect(x, top0, x + w, top1, ramp(C.OAK, 0.74))
-    room.rect(x, (top0 + top1) / 2, x + w, top1, ramp(C.OAK, 0.68))
-    for _ in range(16):
-        gy, gx = rnd.uniform(top0 + 0.6, top1 - 0.6), rnd.uniform(x, x + w - 6)
-        room.rect(gx, gy, gx + rnd.uniform(4, 12), gy + 0.25, ramp(C.OAK, rnd.choice((0.58, 0.64, 0.86))))
-    room.rect(x, (top0 + top1) / 2 - 0.2, x + w, (top0 + top1) / 2 + 0.3, ramp(C.OAK, 0.32))
+    room.rect(x, top0, x + w, top1, ramp(C.OAK, 0.84))
+    room.rect(x, (top0 + top1) / 2, x + w, top1, ramp(C.OAK, 0.8))
+    for _ in range(6):
+        gy, gx = rnd.uniform(top0 + 0.6, top1 - 0.6), rnd.uniform(x, x + w - 10)
+        room.rect(gx, gy, gx + rnd.uniform(6, 14), gy + 0.25, ramp(C.OAK, 0.72))
+    room.rect(x, (top0 + top1) / 2 - 0.2, x + w, (top0 + top1) / 2 + 0.3, ramp(C.OAK, 0.5))
     room.rect(x, top0, x + w, top0 + 0.7, ramp(C.OAK, 0.98))
-    room.rect(x, top0, x + 0.7, top1, ramp(C.OAK, 0.9))
-    room.rect(x + w - 0.7, top0, x + w, top1, ramp(C.OAK, 0.5))
+    room.rect(x, top0, x + 0.7, top1, ramp(C.OAK, 0.94))
+    room.rect(x + w - 2.0, top0, x + w, top1, ramp(C.OAK, 0.6))
     # The moulded front edge: a lit round, a dark cove under it.
     room.rect(x - 0.4, top1, x + w + 0.4, top1 + 1.2, ramp(C.OAK, 0.84))
     room.rect(x - 0.4, top1 + 1.2, x + w + 0.4, top1 + 2.4, ramp(C.OAK, 0.3))
     # The front: stiles and rails, three fielded panels.
-    room.rect(x + 0.6, fy0, x + w - 0.6, fy1, ramp(C.OAK, 0.52))
-    room.rect(x + 0.6, fy0, x + 1.4, fy1, ramp(C.OAK, 0.72))
+    room.rect(x + 0.6, fy0, x + w - 0.6, fy1, ramp(C.OAK, 0.44))
+    room.rect(x + 0.6, fy0, x + 1.4, fy1, ramp(C.OAK, 0.66))
     pw = (w - 2 * 3.0 - 2 * 4.0) / 3
     for i in range(3):
         px0 = x + 3.0 + i * (pw + 4.0)
@@ -341,17 +415,15 @@ def keeper_desk(room, x, y, w, h, rnd):
         py0, py1 = fy0 + 1.8, fy1 - 1.8
         room.rect(px0, py0, px1, py1, ramp(C.OAK, 0.36))
         room.rect(px0 + 1.4, py0 + 1.4, px1 - 1.4, py1 - 1.4, ramp(C.OAK, 0.5))
-        room.rect(px0, py0, px1, py0 + 0.5, ramp(C.OAK, 0.16))
-        room.rect(px0, py0, px0 + 0.5, py1, ramp(C.OAK, 0.2))
-        room.rect(px0, py1 - 0.5, px1, py1, ramp(C.OAK, 0.72))
-        room.rect(px0 + 1.4, py0 + 1.4, px1 - 1.4, py0 + 1.9, ramp(C.OAK, 0.7))
-        # A lozenge cut in the field.
-        cx, cy = (px0 + px1) / 2, (py0 + py1) / 2
-        room.poly([(cx, cy - 2.2), (cx + 3.2, cy), (cx, cy + 2.2), (cx - 3.2, cy)], ramp(C.OAK, 0.4))
-        room.poly([(cx, cy - 2.2), (cx + 3.2, cy), (cx + 2.6, cy), (cx, cy - 1.6)], ramp(C.OAK, 0.66))
+        room.rect(px0, py0, px1, py0 + 0.7, ramp(C.OAK, 0.12))
+        room.rect(px0, py0, px0 + 0.7, py1, ramp(C.OAK, 0.16))
+        room.rect(px0, py1 - 0.6, px1, py1, ramp(C.OAK, 0.7))
+        room.rect(px0 + 1.4, py0 + 1.4, px1 - 1.4, py0 + 2.0, ramp(C.OAK, 0.72))
     # Ebonised split spindles between the panels and at the ends.
     for sx in (x + 1.6, x + 3.0 + pw + 2.0, x + 3.0 + 2 * pw + 6.0, x + w - 1.6):
         turned(room, sx, fy0 + 1.2, fy1 - 1.2, 0.85, 0.2, cols=C.IRON)
+    # The right end in shade.
+    room.rect(x + w - 2.0, fy0 - 2.4, x + w - 0.2, fy1 + 1.6, ramp(C.OAK, 0.2))
     # Plinth and bun feet.
     room.rect(x + 0.3, fy1, x + w - 0.3, fy1 + 1.6, ramp(C.OAK, 0.4))
     room.rect(x + 0.3, fy1, x + w - 0.3, fy1 + 0.5, ramp(C.OAK, 0.66))
@@ -360,7 +432,7 @@ def keeper_desk(room, x, y, w, h, rnd):
         room.ellipse(fx + 0.5, fy1 + 1.2, fx + 2.0, fy1 + 2.2, ramp(C.OAK, 0.62))
     # On the top: the book in front of the candle, an inkhorn and quill, the
     # jug at the right end.
-    ledger(room, x + 3, top1 - 6.5, x + 15, top1 - 1.6)
+    ledger(room, x + 2.6, top1 - 7.4, x + 15.4, top1 - 1.4)
     room.ellipse(x + 16, top1 - 6.6, x + 18.6, top1 - 4.4, ramp(C.IRON, 0.25))
     room.line([(x + 17.2, top1 - 5.8), (x + 19.6, top1 - 11.0)], ramp(C.LINEN, 0.9), 0.5)
     room.line([(x + 17.8, top1 - 7.4), (x + 19.6, top1 - 11.0)], ramp(C.LINEN, 0.6), 0.35)
@@ -381,21 +453,23 @@ def joined_table(room, x, y, w, h, rnd):
     room.rect(x + 1.5, top1 + 3.2, x + w - 1.5, top1 + 3.6, ramp(C.OAK, 0.26))
     room.rect(x + 1.5, top1 + 4.8, x + w - 1.5, top1 + 5.2, ramp(C.OAK, 0.22))
     for k, (b0, b1) in enumerate(((top0, top0 + 6), (top0 + 6, top0 + 12), (top0 + 12, top1))):
-        room.rect(x, b0, x + w, b1, ramp(C.OAK, (0.78, 0.72, 0.75)[k]))
+        room.rect(x, b0, x + w, b1, ramp(C.OAK, (0.86, 0.8, 0.83)[k]))
         if k:
-            room.rect(x, b0 - 0.2, x + w, b0 + 0.25, ramp(C.OAK, 0.32))
-    for _ in range(18):
+            room.rect(x, b0 - 0.2, x + w, b0 + 0.25, ramp(C.OAK, 0.42))
+    for _ in range(7):
         gy, gx = rnd.uniform(top0 + 0.6, top1 - 0.6), rnd.uniform(x, x + w - 6)
-        room.rect(gx, gy, gx + rnd.uniform(4, 14), gy + 0.25, ramp(C.OAK, rnd.choice((0.6, 0.66, 0.9))))
+        room.rect(gx, gy, gx + rnd.uniform(6, 14), gy + 0.25, ramp(C.OAK, 0.74))
     # Rings left by wet tankards.
     for _ in range(3):
         rx, ry = rnd.uniform(x + 6, x + w - 8), rnd.uniform(top0 + 6, top1 - 4)
-        room.ellipse(rx, ry, rx + 3.2, ry + 2.0, ramp(C.OAK, 0.6))
-        room.ellipse(rx + 0.4, ry + 0.3, rx + 2.8, ry + 1.7, ramp(C.OAK, 0.74))
+        room.ellipse(rx, ry, rx + 3.2, ry + 2.0, ramp(C.OAK, 0.7))
+        room.ellipse(rx + 0.4, ry + 0.3, rx + 2.8, ry + 1.7, ramp(C.OAK, 0.82))
     room.rect(x, top0, x + w, top0 + 0.7, ramp(C.OAK, 0.98))
     room.rect(x, top0, x + 0.7, top1, ramp(C.OAK, 0.9))
-    room.rect(x - 0.4, top1, x + w + 0.4, top1 + 1.0, ramp(C.OAK, 0.86))
-    room.rect(x - 0.4, top1 + 1.0, x + w + 0.4, top1 + 1.8, ramp(C.OAK, 0.24))
+    room.rect(x + w - 2.0, top0, x + w, top1, ramp(C.OAK, 0.6))
+    room.rect(x - 0.4, top1, x + w + 0.4, top1 + 1.0, ramp(C.OAK, 0.9))
+    room.rect(x - 0.4, top1 + 1.0, x + w + 0.4, top1 + 1.8, ramp(C.OAK, 0.2))
+    room.rect(x + w - 1.5, top1 + 1.8, x + w - 0.2, top1 + 5.2, ramp(C.OAK, 0.18))
     tankard(room, x + 23, top0 + 7)
     tankard(room, x + 28, top0 + 6)
     room.line([(x + 39, top0 + 4.5), (x + 45, top0 + 3.2)], ramp(C.LINEN, 0.9), 0.5)
@@ -496,7 +570,7 @@ def common_pieces(seed=1693):
     form(room, 74, 98, 48, 16, rnd)
     great_chair(room, 0, 78, 32, 32, rnd)
     work_basket(room, 26, 86, 16, 26, rnd)
-    return C.shrink(room, PIECE_PALETTE, outline=0.35, ring=0.18)
+    return C.shrink(room, PIECE_PALETTE, outline=0.45, ring=0.26)
 
 
 def inn_fire():
@@ -513,7 +587,7 @@ def pot_strip(frames=4):
         room = C.Room(w, h)
         rnd = random.Random(500 + k)
         ph = 2 * math.pi * k / frames
-        cx = 17.0
+        cx = 20.0
         # The brazier's legs, its pan with the coals, its rim.
         for lx, top, bot, t in ((cx - 7.5, 25.0, 31.0, 0.45), (cx + 7.5, 25.0, 31.0, 0.3), (cx + 0.5, 25.0, 29.4, 0.2)):
             room.line([(lx, top), (lx + (lx - cx) * 0.12, bot)], ramp(C.IRON, t), 0.9)
@@ -559,7 +633,6 @@ def candle_strip(frames=4):
     out = Image.new("RGBA", (w * C.DENSITY * frames, h * C.DENSITY), (0, 0, 0, 0))
     for k in range(frames):
         room = C.Room(w, h)
-        ph = 2 * math.pi * k / frames
         cx, base = 8.0, 20.0
         room.ellipse(cx - 4.2, base - 2.6, cx + 4.2, base + 0.4, ramp(BRASS, 0.4))
         room.ellipse(cx - 3.8, base - 2.6, cx + 3.4, base - 0.8, ramp(BRASS, 0.72))
@@ -577,11 +650,12 @@ def candle_strip(frames=4):
         room.rect(cx + 0.6, base - 14.2, cx + 1.3, base - 11.6, ramp(C.LINEN, 0.88))
         room.rect(cx - 0.15, base - 15.6, cx + 0.2, base - 14.4, ramp(C.SOOT, 0.3))
         # The flame.
-        lean = 0.8 * math.sin(ph)
-        tall = 4.6 + 0.6 * math.sin(ph * 2 + 0.6)
+        lean = (0.0, 1.0, -0.7, 0.5)[k % 4]
+        tall = (4.6, 5.6, 3.8, 5.0)[k % 4]
+        width = (1.8, 1.5, 2.1, 1.7)[k % 4]
         fb = base - 14.8
         for scale, tone in ((1.0, 0.5), (0.74, 0.72), (0.5, 0.9), (0.26, 1.0)):
-            half = 1.8 * scale
+            half = width * scale
             room.poly([(cx - half, fb), (cx - half * 0.7, fb - tall * scale * 0.5),
                        (cx + lean * scale, fb - tall * scale), (cx + half * 0.7, fb - tall * scale * 0.5),
                        (cx + half, fb)], ramp(C.FIRE, tone))
@@ -616,25 +690,29 @@ def hall_door(room, x0, y0, rnd):
         a, b = lx0 + i * bw, lx0 + (i + 1) * bw
         t = 0.5 + rnd.uniform(-0.06, 0.06)
         room.rect(a, ly0, b, y1, ramp(C.OAK, t))
-        for _ in range(5):
+        for _ in range(2):
             gx, gy = rnd.uniform(a + 0.8, b - 0.8), rnd.uniform(ly0, y1 - 5)
             room.rect(gx, gy, gx + 0.25, gy + rnd.uniform(3, 9), ramp(C.OAK, t + rnd.choice((-0.1, 0.08))))
         room.rect(a, ly0, a + 0.6, y1, ramp(C.OAK, t + 0.24))
         room.rect(a + 0.6, ly0, a + 0.9, y1, ramp(C.OAK, 0.22))
         room.rect(b - 0.4, ly0, b, y1, ramp(C.OAK, 0.16))
-    room.rect(lx0, ly0, lx1, ly0 + 0.8, ramp(C.OAK, 0.18))
+    # The leaf is set back in its casing: the reveal shows dark along the
+    # head and the left jamb, the casing's inner edge catches the light.
+    room.rect(lx0, ly0, lx1, ly0 + 1.4, ramp(C.SOOT, 0.4))
+    room.rect(lx0, ly0, lx0 + 1.2, y1, ramp(C.SOOT, 0.5))
+    room.rect(lx1 - 0.5, ly0, lx1, y1, ramp(C.OAK, 0.66))
     for hy in (ly0 + 4.0, y1 - 6.5):
-        room.rect(lx0 - 0.4, hy, lx0 + 13, hy + 1.6, ramp(C.IRON, 0.3))
-        room.rect(lx0 - 0.4, hy, lx0 + 13, hy + 0.5, ramp(C.IRON, 0.6))
-        room.ellipse(lx0 + 11.6, hy - 0.4, lx0 + 14.2, hy + 2.0, ramp(C.IRON, 0.3))
-        for nx in (lx0 + 2.5, lx0 + 7.0, lx0 + 11.4):
-            room.rect(nx, hy + 0.5, nx + 0.6, hy + 1.1, ramp(C.IRON, 0.7))
+        room.rect(lx0, hy, lx0 + 13, hy + 2.0, ramp(C.IRON, 0.12))
+        room.rect(lx0, hy, lx0 + 13, hy + 0.5, ramp(C.IRON, 0.5))
+        room.ellipse(lx0 + 11.4, hy - 0.6, lx0 + 14.6, hy + 2.6, ramp(C.IRON, 0.12))
+        for nx in (lx0 + 2.5, lx0 + 7.0):
+            room.rect(nx, hy + 0.7, nx + 0.7, hy + 1.4, ramp(C.IRON, 0.6))
     lx = lx1 - 5.2
     ly = y0 + 17.0
-    room.rect(lx - 0.6, ly - 3.0, lx + 0.6, ly + 3.6, ramp(C.IRON, 0.35))
-    room.rect(lx - 2.6, ly - 0.4, lx + 3.4, ly + 0.5, ramp(C.IRON, 0.55))
-    room.ellipse(lx + 2.6, ly - 1.4, lx + 4.4, ly + 1.0, ramp(C.IRON, 0.25))
-    room.line([(lx - 0.2, ly + 1.0), (lx + 0.6, ly + 4.6)], ramp(C.IRON, 0.6), 0.5)
+    room.rect(lx - 1.0, ly - 3.6, lx + 1.0, ly + 4.0, ramp(C.IRON, 0.14))
+    room.rect(lx - 3.0, ly - 0.6, lx + 3.6, ly + 0.8, ramp(C.IRON, 0.3))
+    room.ellipse(lx + 2.4, ly - 1.8, lx + 4.8, ly + 1.4, ramp(C.IRON, 0.1))
+    room.line([(lx - 0.2, ly + 1.0), (lx + 0.6, ly + 5.0)], ramp(C.IRON, 0.45), 0.7)
 
 
 def hall_room(seed=801):
@@ -710,19 +788,19 @@ def banister(room, x, y, w, h, rnd):
     top, foot = y, y + h - 1
     room.rect(x + 2, foot - 2.6, x + w - 2, foot - 0.6, ramp(C.OAK, 0.42))
     room.rect(x + 2, foot - 2.6, x + w - 2, foot - 2.0, ramp(C.OAK, 0.72))
-    n = int((w - 6) / 4.2)
+    n = int((w - 6) / 7.0)
     step = (w - 6) / n
     for i in range(n):
-        turned(room, x + 3 + (i + 0.5) * step, top + 2.6, foot - 2.4, 0.9, 0.55,
-               profile=[(0, 0.6), (0.12, 0.6), (0.2, 0.95), (0.55, 1.0), (0.75, 0.6), (0.88, 0.6), (1.0, 0.8)])
-    room.rect(x + 1, top + 0.8, x + w - 1, top + 3.0, ramp(C.OAK, 0.6))
-    room.rect(x + 1, top + 0.8, x + w - 1, top + 1.5, ramp(C.OAK, 0.94))
+        turned(room, x + 3 + (i + 0.5) * step, top + 2.6, foot - 2.4, 1.4, 0.48, lit=0.14,
+               profile=[(0, 0.55), (0.12, 0.55), (0.22, 1.0), (0.55, 1.0), (0.72, 0.55), (0.88, 0.55), (1.0, 0.8)])
+    room.rect(x + 1, top + 0.8, x + w - 1, top + 3.0, ramp(C.OAK, 0.56))
+    room.rect(x + 1, top + 0.8, x + w - 1, top + 1.4, ramp(C.OAK, 0.78))
     room.rect(x + 1, top + 2.5, x + w - 1, top + 3.0, ramp(C.OAK, 0.24))
     for px in (x, x + w - 3.2):
         room.rect(px, top, px + 3.2, foot + 1, ramp(C.OAK, 0.5))
-        room.rect(px, top, px + 1.0, foot + 1, ramp(C.OAK, 0.82))
+        room.rect(px, top, px + 1.0, foot + 1, ramp(C.OAK, 0.7))
         room.rect(px + 2.4, top, px + 3.2, foot + 1, ramp(C.OAK, 0.26))
-        room.rect(px - 0.3, top, px + 3.5, top + 1.0, ramp(C.OAK, 0.95))
+        room.rect(px - 0.3, top, px + 3.5, top + 1.0, ramp(C.OAK, 0.8))
         room.rect(px, top + 4.0, px + 3.2, top + 4.6, ramp(C.OAK, 0.3))
 
 
@@ -773,11 +851,37 @@ def looking_glass(room, x0, y0, x1, y1):
     room.line([(cx, y0 - 5), (cx - 3, y0 - 1)], ramp(C.SOOT, 0.6), 0.25)
     room.line([(cx, y0 - 5), (cx + 3, y0 - 1)], ramp(C.SOOT, 0.6), 0.25)
     room.poly([(x0 + 1, y0), (cx - 2, y0 - 2.4), (cx, y0 - 3.6), (cx + 2, y0 - 2.4), (x1 - 1, y0)], ramp(C.OAK, 0.4))
-    room.rect(x0, y0, x1, y1, ramp(C.OAK, 0.3))
-    room.rect(x0, y0, x0 + 0.7, y1, ramp(C.OAK, 0.6))
-    room.rect(x0 + 1.4, y0 + 1.4, x1 - 1.4, y1 - 1.4, ramp(C.GLASS, 0.55))
-    room.poly([(x0 + 1.4, y0 + 1.4), (x0 + 3.8, y0 + 1.4), (x0 + 1.4, y0 + 5.2)], ramp(C.GLASS, 0.85))
-    room.rect(x0 + 1.4, y1 - 3.0, x1 - 1.4, y1 - 1.4, ramp(C.GLASS, 0.35))
+    room.rect(x0 + 0.5, y0 + 0.6, x1 + 0.6, y1 + 0.8, ramp(C.PLASTER, 0.2))
+    room.rect(x0, y0, x1, y1, ramp(C.OAK, 0.2))
+    room.rect(x0, y0, x1, y0 + 0.6, ramp(C.OAK, 0.5))
+    room.rect(x0, y0, x0 + 0.6, y1, ramp(C.OAK, 0.45))
+    room.rect(x0 + 1.6, y0 + 1.6, x1 - 1.6, y1 - 1.6, ramp(C.GLASS, 0.4))
+    room.poly([(x0 + 1.6, y0 + 1.6), (x0 + 4.6, y0 + 1.6), (x0 + 1.6, y0 + 6.4)], ramp(C.GLASS, 0.95))
+    room.line([(x0 + 4.0, y1 - 1.8), (x1 - 1.8, y0 + 4.4)], ramp(C.GLASS, 0.78), 0.5)
+    room.rect(x0 + 1.6, y1 - 3.0, x1 - 1.6, y1 - 1.6, ramp(C.GLASS, 0.2))
+
+
+def braided_rug(room, x0, y0, x1, y1, rnd):
+    """A braided rug of old cloth by the bed, worn and close to the floor in
+    tone: rings of dull wool and linen, each a little out of true, the braid
+    a run of slanted ticks."""
+    cols = ((FADED, 0.42), (C.STRAW, 0.32), (C.INDIGO, 0.3), (C.LINEN, 0.3), (FADED, 0.5), (C.STRAW, 0.38))
+    cx, cy, rx, ry = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2, (y1 - y0) / 2
+    room.ellipse(x0 + 0.6, y0 + 0.9, x1 + 0.6, y1 + 0.9, ramp(C.FLOOR, 0.14))
+    rings = 6
+    for i in range(rings):
+        f = 1 - i / rings
+        col, tone = cols[i % len(cols)]
+        n = 28
+        wob = [rnd.uniform(-0.04, 0.04) for _ in range(n)]
+        pts = [(cx + rx * (f + wob[k]) * math.cos(2 * math.pi * k / n), cy + ry * (f + wob[k]) * math.sin(2 * math.pi * k / n))
+               for k in range(n)]
+        room.poly(pts, ramp(col, tone))
+        m = int(40 * f) + 8
+        for k in range(m):
+            a = 2 * math.pi * (k + 0.5 * (i % 2)) / m
+            px, py = cx + rx * (f - 0.07) * math.cos(a), cy + ry * (f - 0.09) * math.sin(a)
+            room.line([(px - 0.4, py - 0.3), (px + 0.4, py + 0.3)], ramp(col, tone - 0.14), 0.3)
 
 
 def guest_room(seed=847):
@@ -799,13 +903,13 @@ def guest_room(seed=847):
     C.wall_foot(room, 0, w, wall)
     C.light_pool(room, 48, wall + 1, 62, wall + 22, 74)
     C.wear(room, 60, 100, 16, 12, 34)
-    C.rag_rug(room, 50, 76, 78, 92, rnd)
+    braided_rug(room, 50, 76, 78, 92, rnd)
     # The threshold of the door to the hall.
     room.rect(62, 124.5, 82, 128, ramp(C.TIMBER, 0.45))
     room.rect(62, 124.5, 82, 125.2, ramp(C.TIMBER, 0.75))
-    for x0, y0, x1, y1 in ((17, 85, 49, 90), (17, 115, 49, 119), (49, 64, 65, 69), (97, 68, 112, 73),
-                           (82, 103, 96, 108)):
-        room.shadow(x0, y0, x1, y1, 220)
+    for x0, y0, x1, y1 in ((18, 86, 51, 91), (18, 115, 50, 120), (50, 65, 66, 70), (98, 69, 112, 74),
+                           (83, 103, 97, 108)):
+        room.shadow(x0, y0, x1, y1, 240)
     return C.shrink(room, ROOM_PALETTE)
 
 
@@ -820,7 +924,7 @@ def candle_stand(room, x, y, w, h, rnd):
     room.rect(x + 0.6, top1, x + w - 0.6, top1 + 5.5, ramp(C.OAK, 0.48))
     room.rect(x + 1.6, top1 + 1.0, x + w - 1.6, top1 + 4.6, ramp(C.OAK, 0.4))
     room.rect(x + 1.6, top1 + 1.0, x + w - 1.6, top1 + 1.4, ramp(C.OAK, 0.2))
-    room.ellipse(x + w / 2 - 0.9, top1 + 2.2, x + w / 2 + 0.9, top1 + 4.2, ramp(BRASS, 0.7))
+    room.ellipse(x + w / 2 - 0.9, top1 + 2.2, x + w / 2 + 0.9, top1 + 4.2, ramp(BRASS, 0.45))
     room.rect(x, top0, x + w, top1, ramp(C.OAK, 0.76))
     room.rect(x, top0, x + w, top0 + 0.6, ramp(C.OAK, 0.98))
     room.rect(x - 0.3, top1 - 0.8, x + w + 0.3, top1 + 0.2, ramp(C.OAK, 0.3))
@@ -856,17 +960,19 @@ def chest_of_drawers(room, x, y, w, h, rnd):
     room.rect(x, top, x + w, top + 0.7, ramp(C.OAK, 0.98))
     room.rect(x, top + 1.8, x + w, top + 2.6, ramp(C.OAK, 0.3))
     feet = y + h - 4.0
-    room.rect(x + 0.6, top + 2.6, x + w - 0.6, feet - 2.0, ramp(C.OAK, 0.46))
-    room.rect(x + 0.6, top + 2.6, x + 1.4, feet - 2.0, ramp(C.OAK, 0.7))
+    room.rect(x + 0.6, top + 2.6, x + w - 0.6, feet - 2.0, ramp(C.OAK, 0.22))
+    room.rect(x + 0.6, top + 2.6, x + 1.4, feet - 2.0, ramp(C.OAK, 0.6))
     dy = top + 3.6
     for k, dh in enumerate((6.0, 7.0, 8.0, 9.0)):
-        room.rect(x + 1.8, dy, x + w - 1.8, dy + dh - 0.8, ramp(C.OAK, 0.56))
-        room.rect(x + 1.8, dy, x + w - 1.8, dy + 0.5, ramp(C.OAK, 0.78))
-        room.rect(x + 1.8, dy + dh - 1.3, x + w - 1.8, dy + dh - 0.8, ramp(C.OAK, 0.22))
-        for px in (x + 4.6, x + w - 4.6):
-            room.rect(px - 0.9, dy + dh / 2 - 1.0, px + 0.9, dy + dh / 2 - 0.4, ramp(BRASS, 0.5))
-            room.ellipse(px - 0.5, dy + dh / 2 - 0.6, px + 0.5, dy + dh / 2 + 1.6, ramp(BRASS, 0.75))
+        room.rect(x + 1.8, dy, x + w - 2.6, dy + dh - 1.0, ramp(C.OAK, 0.56))
+        room.rect(x + 1.8, dy, x + w - 2.6, dy + 0.5, ramp(C.OAK, 0.8))
+        room.rect(x + 1.8, dy + dh - 1.5, x + w - 2.6, dy + dh - 1.0, ramp(C.OAK, 0.36))
+        for px in (x + 4.6, x + w - 5.4):
+            room.rect(px - 0.9, dy + dh / 2 - 1.0, px + 0.9, dy + dh / 2 - 0.4, ramp(BRASS, 0.32))
+            room.ellipse(px - 0.5, dy + dh / 2 - 0.6, px + 0.5, dy + dh / 2 + 1.6, ramp(BRASS, 0.5))
         dy += dh
+    # The case's right side in shade.
+    room.rect(x + w - 2.0, top + 2.6, x + w - 0.4, feet - 2.0, ramp(C.OAK, 0.16))
     room.rect(x, feet - 2.0, x + w, feet, ramp(C.OAK, 0.66))
     room.rect(x, feet - 0.6, x + w, feet, ramp(C.OAK, 0.26))
     for fx in (x + 2.0, x + w - 2.0):
@@ -894,8 +1000,8 @@ def trunk(room, x, y, w, h, rnd):
         room.rect(bx, y + 0.8, bx + 2.0, y + h - 0.6, ramp(C.IRON, 0.32))
         room.rect(bx, y + 0.8, bx + 0.6, y + h - 0.6, ramp(C.IRON, 0.6))
     cx = x + w / 2
-    room.rect(cx - 2.0, lid + 0.8, cx + 2.0, lid + 5.0, ramp(BRASS, 0.55))
-    room.rect(cx - 2.0, lid + 0.8, cx - 1.2, lid + 5.0, ramp(BRASS, 0.85))
+    room.rect(cx - 2.0, lid + 0.8, cx + 2.0, lid + 5.0, ramp(BRASS, 0.4))
+    room.rect(cx - 2.0, lid + 0.8, cx - 1.2, lid + 5.0, ramp(BRASS, 0.62))
     room.rect(cx - 0.3, lid + 2.2, cx + 0.4, lid + 3.4, ramp(C.SOOT, 0.2))
     room.rect(cx - 0.8, lid - 2.4, cx + 0.8, lid + 1.6, ramp(C.IRON, 0.45))
     room.line([(x + w - 0.8, lid + 1.6), (x + w + 0.0, lid + 3.6), (x + w - 0.8, lid + 5.4)], ramp(LEATHER, 0.3), 0.6)
@@ -905,7 +1011,7 @@ def guest_pieces(seed=848):
     w, h = 112, 128
     rnd = random.Random(seed)
     room = C.Room(w, h)
-    C.rope_bed(room, 16, 44, 32, 44, C.MADDER, rnd, "overshot")
+    C.rope_bed(room, 16, 44, 32, 44, FADED, rnd, "check")
     trunk(room, 16, 102, 32, 16, rnd)
     candle_stand(room, 48, 32, 16, 36, rnd)
     chest_of_drawers(room, 96, 24, 16, 48, rnd)
