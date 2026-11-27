@@ -36,8 +36,11 @@ const ROOMS := {
     # left; the keeper comes and goes by them (the plan's keeper_door).
     "019dbcd2-c0b1-7bf9-98c2-0610cfb7f5e9": {
         "title": "Tavern",
-        "sheet": "/tilesets/interiors/tavern_common.png",
-        "pieces_sheet": "/tilesets/interiors/tavern_pieces.png",
+        # Painted (LLM-969): tools/interior-art/tavern.py, at twice the
+        # room's pixels.
+        "sheet": "res://assets/interiors/tavern_common.png",
+        "pieces_sheet": "res://assets/interiors/tavern_pieces.png",
+        "density": 2,
         "size": Vector2i(128, 112),
         # A sale is set on the bar's front arm (LLM-757).
         "bar": {"x": 90, "y": 94},
@@ -45,9 +48,12 @@ const ROOMS := {
         "pieces": [
             {"x": 82, "y": 50, "w": 48, "h": 30, "sort_y": 79},
             {"x": 82, "y": 80, "w": 48, "h": 30, "sort_y": 99},
-            {"x": 8, "y": 70, "w": 15, "h": 32, "sort_y": 95},
-            {"x": 48, "y": 70, "w": 15, "h": 32, "sort_y": 95},
-            {"x": 20, "y": 72, "w": 32, "h": 32, "sort_y": 96},
+            {"x": 8, "y": 70, "w": 14, "h": 32, "sort_y": 95},
+            {"x": 50, "y": 70, "w": 13, "h": 32, "sort_y": 95},
+            {"x": 22, "y": 72, "w": 28, "h": 32, "sort_y": 96},
+        ],
+        "anims": [
+            {"sheet": "res://assets/interiors/tavern_fire.png", "frames": 4, "fps": 8.0, "x": 40, "y": 46},
         ],
     },
     # The Inn ("Blue House (Medium)", footprint 8 x 7 tiles): an entry hall.
@@ -218,9 +224,10 @@ const ROOMS := {
     # logs, the stairs straight down from the gap, and a shabbier guest room.
     "tavern_hall": {
         "title": "Upstairs",
-        "sheet": "/tilesets/interiors/tavern_hall_common.png",
-        "pieces_sheet": "/tilesets/interiors/tavern_hall_pieces.png",
-        "door_open": "/tilesets/interiors/tavern_hall_door_open.png",
+        "sheet": "res://assets/interiors/tavern_hall_common.png",
+        "pieces_sheet": "res://assets/interiors/tavern_hall_pieces.png",
+        "door_open": "res://assets/interiors/tavern_hall_door_open.png",
+        "density": 2,
         "size": Vector2i(256, 128),
         "pieces": [
             {"x": 0, "y": 63, "w": 115, "h": 19, "sort_y": 80},
@@ -229,8 +236,9 @@ const ROOMS := {
     },
     "tavern_guest": {
         "title": "Your room",
-        "sheet": "/tilesets/interiors/tavern_guest_common.png",
-        "pieces_sheet": "/tilesets/interiors/tavern_guest_pieces.png",
+        "sheet": "res://assets/interiors/tavern_guest_common.png",
+        "pieces_sheet": "res://assets/interiors/tavern_guest_pieces.png",
+        "density": 2,
         "size": Vector2i(112, 128),
         "pieces": [
             {"x": 16, "y": 44, "w": 32, "h": 44, "sort_y": 71},
@@ -238,7 +246,7 @@ const ROOMS := {
             {"x": 48, "y": 25, "w": 16, "h": 45, "sort_y": 69},
             {"x": 96, "y": 30, "w": 16, "h": 50, "sort_y": 79},
             {"x": 81, "y": 91, "w": 14, "h": 16, "sort_y": 101},
-            {"x": 3, "y": 100, "w": 15, "h": 16, "sort_y": 115},
+            {"x": 3, "y": 100, "w": 13, "h": 16, "sort_y": 115},
         ],
         "covers": {
             "bed": {"x": 16, "y": 56, "w": 32, "h": 32},
