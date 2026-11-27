@@ -3201,8 +3201,8 @@ func _test_inn_keeper_behind_the_desk() -> void:
 
 
 ## The fire, the pot and the candle play their strips: the fire as part of the
-## wall, the pot and the candle sorted with the furniture; a room without
-## `anims` has none.
+## wall, the pot and the candle sorted with the furniture; the Tavern's fire
+## is part of its wall, and nothing among its furniture plays.
 func _test_inn_animations() -> void:
     _inn_with_guest(0)
     var anims: Array = _panel.room["anims"]
@@ -3235,7 +3235,7 @@ func _test_inn_animations() -> void:
     for p in _pieces():
         if p.has_meta("fps"):
             playing += 1
-    _check("the Tavern has none", [_panel._anims.get_child_count(), playing], [0, 0])
+    _check("the Tavern's fire only, on the wall", [_panel._anims.get_child_count(), playing], [1, 0])
     _panel.close()
     _done()
 
@@ -3431,13 +3431,14 @@ func _test_room_pieces() -> void:
         _done()
         return
     var spec: Dictionary = pieces[0]
-    _check("a piece is cut from the sheet where it stands", back.region_rect, Rect2(spec["x"], spec["y"], spec["w"], spec["h"]))
+    var d := int(_panel.room.get("density", 1))
+    _check("a piece is cut from the sheet where it stands", back.region_rect, Rect2(int(spec["x"]) * d, int(spec["y"]) * d, int(spec["w"]) * d, int(spec["h"]) * d))
     _check("and stands at its sort line", back.position, Vector2(spec["x"], spec["sort_y"]))
     var keeper: Node2D = _panel._tending()
     _check("the keeper stands between the bar's arms", [keeper.position.y > back.position.y, keeper.position.y < front.position.y], [true, true])
     var guest: Node2D = _panel._people.get_node("guest")
     var chair := _piece_at(8, 70)
-    var table := _piece_at(20, 72)
+    var table := _piece_at(22, 72)
     _check("the diner sits in front of their chair and the table", [guest.position.y > chair.position.y, guest.position.y > table.position.y], [true, true])
     # A tap on furniture finds nobody; a person over furniture is still found.
     _panel.k = 4
@@ -4403,7 +4404,7 @@ func _test_tavern_upstairs() -> void:
     pc.set_meta("room_square", hall["door"]["square"])
     _panel.open(_sid, "hall")
     _check("the window is the Tavern's hall", [_panel.room.get("title", ""), _panel.room.get("sheet", "")],
-        ["Upstairs", "/tilesets/interiors/tavern_hall_common.png"])
+        ["Upstairs", "res://assets/interiors/tavern_hall_common.png"])
     _check("a door leads to its room", InteriorRooms.way_at(_panel.room, Vector2(80, 30)), "bedroom_2")
     _check("the stairs lead down", InteriorRooms.way_at(_panel.room, Vector2(128, 90)), "common")
     _check("down where they spread", InteriorRooms.way_at(_panel.room, Vector2(102, 124)), "common")
@@ -4423,7 +4424,7 @@ func _test_tavern_upstairs() -> void:
     _panel._stretch = Vector2.ONE
     _panel._scene.position = Vector2.ZERO
     _check("the window is their room", [_panel.room.get("title", ""), _panel.room.get("sheet", "")],
-        ["Your room", "/tilesets/interiors/tavern_guest_common.png"])
+        ["Your room", "res://assets/interiors/tavern_guest_common.png"])
     var went := []
     var on_way := func(to: String): went.append(to)
     _panel.room_tapped.connect(on_way)
@@ -4628,8 +4629,8 @@ func _test_painted_room_density() -> void:
     _check("a tap on someone seated over the furniture finds them", str(_panel.thing_at(_at_art(tap)).get("id", "")), "abel")
     _panel.close()
     _clear_people()
-    # A pack room is still drawn one to one.
-    _panel.open(_sid)
+    # A pack room (the Inn's common room) is still drawn one to one.
+    _panel.open(INN)
     _check("a pack room: the background one to one", _panel._background.scale, Vector2.ONE)
     _panel.close()
     _panel.texture_hook = t_hook
