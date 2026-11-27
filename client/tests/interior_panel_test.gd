@@ -3137,10 +3137,11 @@ func _pieces() -> Array:
     return out
 
 
-## The piece whose top-left is at (x, y), or null.
+## The piece whose top-left is at (x, y), or null. Its offset is in the
+## sheet's pixels (LLM-969), so it is scaled back to room pixels.
 func _piece_at(x: int, y: int) -> Sprite2D:
     for p in _pieces():
-        if p.position.x == x and p.position.y + p.offset.y == y:
+        if p.position.x == x and p.position.y + p.offset.y * p.scale.y == y:
             return p
     return null
 

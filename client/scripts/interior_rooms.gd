@@ -54,27 +54,32 @@ const ROOMS := {
     # The keeper stands behind the desk at the foot of the stairs and comes
     # and goes by the stairs (the plan's keeper_door). The bench seats face the
     # table, backs to us.
+    # Painted (LLM-969): tools/interior-art/inn.py, at twice the room's
+    # pixels, as are the hall and the guest room upstairs.
     "019d98af-ac9b-7833-8e03-5a7015bb5b0c": {
         "title": "Inn",
-        "sheet": "/tilesets/interiors/inn_common.png",
-        "pieces_sheet": "/tilesets/interiors/inn_pieces.png",
+        "sheet": "res://assets/interiors/inn_common.png",
+        "pieces_sheet": "res://assets/interiors/inn_pieces.png",
+        "density": 2,
         "size": Vector2i(128, 112),
         "bar": {"x": 50, "y": 70},
         "reach": {"x": 48, "y": 66},
         "pieces": [
-            # The desk with its bottle; the keeper stands behind it.
+            # The desk; the keeper stands behind it.
             {"x": 20, "y": 54, "w": 48, "h": 36, "sort_y": 89},
-            # Table and bench: the bench sitters sort in front of both.
-            {"x": 74, "y": 74, "w": 48, "h": 32, "sort_y": 104},
-            {"x": 74, "y": 98, "w": 48, "h": 16, "sort_y": 109},
-            # Rocking chair and basket.
-            {"x": 0, "y": 78, "w": 32, "h": 32, "sort_y": 101},
-            {"x": 26, "y": 86, "w": 16, "h": 26, "sort_y": 111},
+            # Table and bench: the bench sitters sort in front of both. The
+            # table stops where the bench begins (rects are disjoint: the
+            # window cuts each piece from its own pixels).
+            {"x": 74, "y": 74, "w": 48, "h": 24, "sort_y": 104},
+            {"x": 74, "y": 98, "w": 48, "h": 14, "sort_y": 109},
+            # The great chair, clear of the desk, and the work basket below it.
+            {"x": 0, "y": 78, "w": 20, "h": 32, "sort_y": 101},
+            {"x": 26, "y": 90, "w": 16, "h": 22, "sort_y": 111},
         ],
         "anims": [
-            {"sheet": "/tilesets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 96, "y": 38},
-            {"sheet": "/tilesets/interiors/inn_pot.png", "frames": 4, "fps": 5.0, "x": 66, "y": 50, "sort_y": 81},
-            {"sheet": "/tilesets/interiors/inn_candle.png", "frames": 4, "fps": 6.0, "x": 24, "y": 44, "sort_y": 90},
+            {"sheet": "res://assets/interiors/inn_fire.png", "frames": 4, "fps": 8.0, "x": 96, "y": 38},
+            {"sheet": "res://assets/interiors/inn_pot.png", "frames": 4, "fps": 5.0, "x": 66, "y": 50, "sort_y": 81},
+            {"sheet": "res://assets/interiors/inn_candle.png", "frames": 4, "fps": 6.0, "x": 24, "y": 44, "sort_y": 90},
         ],
     },
     # Homes (LLM-782): one room per house type, keyed by the plan's `art` — every
@@ -176,12 +181,14 @@ const ROOMS := {
     # seen head-on: five doors in a row, a walkway behind the banister (a
     # piece, so people on the walkway stand behind it), the stairs down below.
     # A vacant room's door stands open: `door_open` is drawn over the closed
-    # door at its way's tap rect. Built by build_rooms.gd, which prints these.
+    # door at its way's tap rect, 2 px in (32 x 32 room px). The Inn's are
+    # painted by inn.py; the Tavern's built by build_rooms.gd.
     "inn_hall": {
         "title": "Upstairs",
-        "sheet": "/tilesets/interiors/inn_hall_common.png",
-        "pieces_sheet": "/tilesets/interiors/inn_hall_pieces.png",
-        "door_open": "/tilesets/interiors/inn_hall_door_open.png",
+        "sheet": "res://assets/interiors/inn_hall_common.png",
+        "pieces_sheet": "res://assets/interiors/inn_hall_pieces.png",
+        "door_open": "res://assets/interiors/inn_hall_door_open.png",
+        "density": 2,
         "size": Vector2i(256, 128),
         "pieces": [
             {"x": 0, "y": 63, "w": 115, "h": 19, "sort_y": 80},
@@ -192,8 +199,9 @@ const ROOMS := {
     # player's character to bed in it.
     "inn_guest": {
         "title": "Your room",
-        "sheet": "/tilesets/interiors/inn_guest_common.png",
-        "pieces_sheet": "/tilesets/interiors/inn_guest_pieces.png",
+        "sheet": "res://assets/interiors/inn_guest_common.png",
+        "pieces_sheet": "res://assets/interiors/inn_guest_pieces.png",
+        "density": 2,
         "size": Vector2i(112, 128),
         "pieces": [
             {"x": 16, "y": 44, "w": 32, "h": 44, "sort_y": 71},
