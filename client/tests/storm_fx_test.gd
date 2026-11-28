@@ -43,6 +43,7 @@ const TESTS := [
     "_test_a_long_delta_advances_all_its_frames",
     "_test_rain_scale_snaps_to_whole_numbers",
     "_test_drift_uses_the_drawn_scale_not_the_live_camera",
+    "_test_drift_wraps_exactly_at_half_scale",
     "_test_snowstorm_draws_snow_without_lightning",
 ]
 
@@ -168,6 +169,20 @@ func _test_missing_sheet_yields_no_frames() -> void:
 ## sizes the overlay is built for. A sheet repainted at another size, or a
 ## frame-size constant left behind, fails here instead of drawing a torn tile.
 func _test_shipped_sheets_cut_into_whole_frames() -> void:
+    # The sheets themselves, exactly: a slice check alone would pass over a
+    # sheet with extra rows or a ninth frame.
+    var sizes := {
+        _fx.RAIN_LIGHT_SHEET: Vector2(512, 256),
+        _fx.RAIN_HEAVY_SHEET: Vector2(512, 256),
+        _fx.SNOW_LIGHT_SHEET: Vector2(512, 256),
+        _fx.SNOW_HEAVY_SHEET: Vector2(512, 256),
+        _fx.LIGHTNING_SHEET: Vector2(128, 256),
+    }
+    for path in sizes:
+        var sheet: Texture2D = load(path)
+        _check("%s loads" % path, sheet != null)
+        if sheet != null:
+            _check("%s is %s" % [path, sizes[path]], sheet.get_size() == sizes[path])
     var sheets := {
         "light rain": _fx._rain_frames_light,
         "heavy rain": _fx._rain_frames_heavy,
@@ -476,7 +491,7 @@ func _test_a_long_delta_advances_all_its_frames() -> void:
 ## draw at.
 func _test_rain_scale_snaps_to_whole_numbers() -> void:
     var view: Vector2 = _fx.get_viewport().get_visible_rect().size
-    for pair in [[0.3, 0.5], [0.7, 0.5], [0.8, 1.0], [1.0, 1.0], [1.4, 1.0], [1.6, 2.0], [3.0, 3.0]]:
+    for pair in [[0.3, 0.5], [0.7, 0.5], [0.74, 0.5], [0.75, 1.0], [0.8, 1.0], [1.0, 1.0], [1.4, 1.0], [1.6, 2.0], [3.0, 3.0]]:
         var zoom: float = pair[0]
         var expected: float = pair[1]
         var cam := _set_zoom(zoom)
@@ -503,6 +518,57 @@ func _test_rain_scale_snaps_to_whole_numbers() -> void:
 ## with the scale the sheets are drawn at — drift must ride the DRAWN scale
 ## (_applied_rain_scale) or the sheet slides at one scale while painted at
 ## another, reopening the edge-coverage gap this pairing exists to close.
+## The drift's wrap, exactly, at the half scale (zoom under 0.75). A phase
+## just under one tile, advanced past it, must land at the exact remainder of
+## the 64 px tile — a stale 32 px modulus also keeps the phase inside [0, 64)
+## and would pass a range check — and the sheet must cover the screen on both
+## sides of the wrap.
+func _test_drift_wraps_exactly_at_half_scale() -> void:
+    var cam := _set_zoom(0.5)
+    _fx._layout()
+    _check("precondition — drawn at the half scale", is_equal_approx(_fx._applied_rain_scale, 0.5))
+    var view: Vector2 = _fx.get_viewport().get_visible_rect().size
+
+    _fx._rain_light_drift = 63.0
+    _fx._rain_heavy_drift = 63.0
+    _fx._apply_rain_drift()
+    _check("before the wrap — sheet at (63 - 64) * 0.5",
+        is_equal_approx(_fx._rain_light.position.x, -0.5))
+    for rect: TextureRect in [_fx._rain_heavy, _fx._rain_light]:
+        _check("before the wrap — sheet starts at or left of the screen edge", rect.position.x <= 0.0)
+        _check("before the wrap — sheet reaches the right screen edge",
+            rect.position.x + rect.size.x * rect.scale.x >= view.x)
+
+    # 0.1 s of wind: light 63 + 2.0 = 65 -> 1.0; heavy 63 + 1.2 = 64.2 -> 0.2.
+    _fx._advance_rain(0.1)
+    _check("light phase wraps to the exact remainder",
+        is_equal_approx(_fx._rain_light_drift, fmod(63.0 + 0.1 * _fx.RAIN_DRIFT_LIGHT_PPS, 64.0)))
+    _check("light phase is 1.0", is_equal_approx(_fx._rain_light_drift, 1.0))
+    _check("heavy phase wraps to the exact remainder",
+        is_equal_approx(_fx._rain_heavy_drift, fmod(63.0 + 0.1 * _fx.RAIN_DRIFT_HEAVY_PPS, 64.0)))
+    _check("after the wrap — light sheet at (1 - 64) * 0.5",
+        is_equal_approx(_fx._rain_light.position.x, -31.5))
+    for rect: TextureRect in [_fx._rain_heavy, _fx._rain_light]:
+        _check("after the wrap — sheet starts at or left of the screen edge", rect.position.x <= 0.0)
+        _check("after the wrap — sheet reaches the right screen edge",
+            rect.position.x + rect.size.x * rect.scale.x >= view.x)
+
+    # The wrap's remainder is the same under a 32 px modulus (65 mod 32 is
+    # also 1), so step inside the second half of the tile too: 40 + 2 must
+    # stay 42, where a 32 px modulus would wrap it to 10.
+    _fx._rain_light_drift = 40.0
+    _fx._advance_rain(0.1)
+    _check("a phase past half a tile keeps going — the tile is 64 px, not 32",
+        is_equal_approx(_fx._rain_light_drift, 42.0))
+    _check("and the sheet sits at (42 - 64) * 0.5",
+        is_equal_approx(_fx._rain_light.position.x, -11.0))
+
+    _fx._rain_light_drift = 0.0
+    _fx._rain_heavy_drift = 0.0
+    _clear_zoom(cam)
+    _fx._layout()
+    _done()
+
 func _test_drift_uses_the_drawn_scale_not_the_live_camera() -> void:
     var cam := _set_zoom(2.0)   # snapped scale 2.0
     _fx._layout()

@@ -106,37 +106,60 @@ RAIN = {
 }
 
 
-def paint_rain(kind, seed):
+# A streak is two columns wide, and two streaks of a layer never share or
+# touch a column (that reads as a seam when the tile repeats), so their start
+# columns are at least this far apart, across the tile's wrap too.
+RAIN_MIN_GAP = 3
+
+
+def rain_columns(n, W, rnd):
+    """n start columns, every two at least RAIN_MIN_GAP apart around the
+    circle of W columns. Column i sits at its even share i*W/n plus a jitter
+    of at most (W//n - RAIN_MIN_GAP), so any neighbour gap — the last-to-first
+    one across the wrap included — is at least W//n minus that jitter."""
+    if n * RAIN_MIN_GAP > W:
+        raise ValueError(f"{n} streaks do not fit {W} columns {RAIN_MIN_GAP} apart")
+    jitter = W // n - RAIN_MIN_GAP
+    offset = rnd.randrange(W)
+    return [(i * W // n + rnd.randint(0, jitter) + offset) % W for i in range(n)]
+
+
+def circular_gaps(columns, W):
+    cols = sorted(columns)
+    return [(cols[(i + 1) % len(cols)] - cols[i]) % W for i in range(len(cols))]
+
+
+def rain_drops(kind, seed):
     spec = RAIN[kind]
     rnd = random.Random(seed)
     W, H = TILE
     drops = []
     for _ in range(spec["count"]):
         drops.append(dict(
-            x=rnd.randrange(W),
             y=rnd.uniform(0, H),
             # Tiles per loop: 1 tile = 32 px a frame, 2 = 64 px a frame.
             laps=2 if rnd.random() < spec["fast"] else 1,
             length=rnd.randint(*spec["length"]),
             alpha=rnd.randint(*spec["alpha"]),
         ))
-    # Keep the streaks of one layer from sitting in the same column, which
-    # reads as a seam when the tile repeats.
-    # A streak takes its column and the next; the column before is kept free
-    # too, so two streaks never touch. Give up after one pass of the tile,
-    # rather than loop forever, if a layer has more drops than room.
-    used = set()
-    for d in drops:
-        for _ in range(W):
-            if not {(d["x"] + dx) % W for dx in (-1, 0, 1)} & used:
-                break
-            d["x"] = (d["x"] + 1) % W
-        for dx in (-1, 0, 1):
-            used.add((d["x"] + dx) % W)
+    # Columns are dealt out shuffled, so a drop's speed and length have
+    # nothing to do with where it falls.
+    columns = rain_columns(len(drops), W, rnd)
+    rnd.shuffle(columns)
+    for d, x in zip(drops, columns):
+        d["x"] = x
+    return drops
 
+
+def rain_frames(kind, seed, frame_indices):
+    """The rain frames at the given indices. Index FRAMES is one whole loop
+    on from 0, which --check uses to prove the loop closes."""
+    spec = RAIN[kind]
+    W, H = TILE
+    drops = rain_drops(kind, seed)
     tail, head = rgb(spec["tail"]), rgb(spec["head"])
     frames = []
-    for f in range(FRAMES):
+    for f in frame_indices:
         c = Canvas(W, H, wrap=True)
         for d in drops:
             y_head = d["y"] + f * d["laps"] * H / FRAMES
@@ -150,7 +173,11 @@ def paint_rain(kind, seed):
                 c.put(d["x"], y, mix(col, head, 0.25), a)
                 c.put(d["x"] + 1, y, col, a * 0.85)
         frames.append(c.image())
-    return strip(frames)
+    return frames
+
+
+def paint_rain(kind, seed):
+    return strip(rain_frames(kind, seed, range(FRAMES)))
 
 
 # --- snow -------------------------------------------------------------------
@@ -195,7 +222,8 @@ def flake(c, x, y, size, alpha, tail=0):
         c.put(x + tx, y + ty, FLAKE_RIM, alpha * 0.55)
 
 
-def paint_snow(kind, seed):
+def snow_frames(kind, seed, frame_indices):
+    """The snow frames at the given indices; index FRAMES is one loop on."""
     spec = SNOW[kind]
     rnd = random.Random(seed)
     W, H = TILE
@@ -208,7 +236,7 @@ def paint_snow(kind, seed):
         tail=rnd.randrange(len(FLECK_TAILS)),
     ) for _ in range(spec["count"])]
     frames = []
-    for f in range(FRAMES):
+    for f in frame_indices:
         c = Canvas(W, H, wrap=True)
         for fl in flakes:
             # One tile down per loop; one full sway per loop. Both close at
@@ -217,7 +245,11 @@ def paint_snow(kind, seed):
             x = fl["x"] + fl["sway"] * math.sin(fl["phase"] + 2 * math.pi * f / FRAMES)
             flake(c, x, y, fl["size"], fl["alpha"], fl["tail"])
         frames.append(c.image())
-    return strip(frames)
+    return frames
+
+
+def paint_snow(kind, seed):
+    return strip(snow_frames(kind, seed, range(FRAMES)))
 
 
 # --- lightning --------------------------------------------------------------
@@ -402,12 +434,15 @@ def paint_snow_splash():
 
 # --- output -----------------------------------------------------------------
 
+SEEDS = {"rain-light": 9701, "rain-heavy": 9702, "snow-light": 9703, "snow-heavy": 9704}
+
+
 def paint_all():
     return {
-        "rain-light.png": paint_rain("light", 9701),
-        "rain-heavy.png": paint_rain("heavy", 9702),
-        "snow-light.png": paint_snow("light", 9703),
-        "snow-heavy.png": paint_snow("heavy", 9704),
+        "rain-light.png": paint_rain("light", SEEDS["rain-light"]),
+        "rain-heavy.png": paint_rain("heavy", SEEDS["rain-heavy"]),
+        "snow-light.png": paint_snow("light", SEEDS["snow-light"]),
+        "snow-heavy.png": paint_snow("heavy", SEEDS["snow-heavy"]),
         "lightning.png": paint_lightning(9705),
         "rain-splash.png": paint_rain_splash(),
         "snow-splash.png": paint_snow_splash(),
@@ -425,6 +460,59 @@ SIZES = {
 }
 
 
+def check_wrap_canvas():
+    """A wrapping canvas lands a write past any edge on the opposite edge,
+    which is what makes a streak or flake crossing the tile's border continue
+    on the far side of the next tile."""
+    ok = True
+    W, H = TILE
+    for (x, y), want in (((W, 5), (0, 5)), ((-1, 5), (W - 1, 5)),
+                         ((7, H), (7, 0)), ((7, -1), (7, H - 1)), ((-1, -1), (W - 1, H - 1))):
+        c = Canvas(W, H, wrap=True)
+        c.put(x, y, (255, 255, 255), 255)
+        if c.px[want[1]][want[0]][3] != 255:
+            print(f"wrap: a write at {(x, y)} did not land at {want}")
+            ok = False
+    return ok
+
+
+def check_loops():
+    """One whole loop on (frame FRAMES), every falling sheet must draw
+    exactly its frame 0: the motion closes, so the animation has no jump.
+    Also some rain frame must have a streak on both its top and its bottom
+    row (one streak crossing the border, drawn on both sides by the wrap),
+    so the shipped rain really exercises the wrap. Snow is not held to this:
+    a flake moves 32 px a frame and may never sit on the border in any frame;
+    check_wrap_canvas covers the wrap itself."""
+    ok = True
+    W, H = TILE
+    for kind in ("light", "heavy"):
+        for name, frames_of in (("rain", rain_frames), ("snow", snow_frames)):
+            seed = SEEDS[f"{name}-{kind}"]
+            frames = frames_of(kind, seed, list(range(FRAMES + 1)))
+            if frames[0].tobytes() != frames[FRAMES].tobytes():
+                print(f"{name}-{kind}: frame {FRAMES} is not frame 0 (the loop jumps)")
+                ok = False
+            if name == "rain" and not any(
+                    f.crop((0, 0, W, 1)).getbbox() and f.crop((0, H - 1, W, H)).getbbox()
+                    for f in frames[:FRAMES]):
+                print(f"{name}-{kind}: no frame has a shape crossing the tile's top/bottom edge")
+                ok = False
+    return ok
+
+
+def check_rain_spacing():
+    ok = True
+    W = TILE[0]
+    for kind in ("light", "heavy"):
+        cols = [d["x"] for d in rain_drops(kind, SEEDS[f"rain-{kind}"])]
+        gaps = circular_gaps(cols, W)
+        if len(set(cols)) != len(cols) or min(gaps) < RAIN_MIN_GAP:
+            print(f"rain-{kind}: streak columns closer than {RAIN_MIN_GAP} (gaps {sorted(gaps)})")
+            ok = False
+    return ok
+
+
 def check(images, out_dir):
     ok = True
     for name, im in images.items():
@@ -435,19 +523,26 @@ def check(images, out_dir):
         if not os.path.exists(on_disk):
             print(f"{name}: not written")
             ok = False
-        elif Image.open(on_disk).convert("RGBA").tobytes() != im.tobytes():
+            continue
+        disk = Image.open(on_disk).convert("RGBA")
+        if disk.size != SIZES[name]:
+            print(f"{name}: on disk {disk.size}, want {SIZES[name]}")
+            ok = False
+        elif disk.tobytes() != im.tobytes():
             print(f"{name}: differs from a fresh paint (run without --check)")
             ok = False
     # A splash or bolt touching its frame's edge would be cut off on screen.
+    # A bolt runs the full height on purpose; a splash must clear all four.
     for name in ("rain-splash.png", "snow-splash.png", "lightning.png"):
         im = images[name]
-        fw = SPLASH[0] if "splash" in name else BOLT[0]
+        splash = "splash" in name
+        fw = SPLASH[0] if splash else BOLT[0]
         for i in range(im.size[0] // fw):
             box = im.crop((i * fw, 0, (i + 1) * fw, im.size[1])).getbbox()
-            if box and (box[0] == 0 or box[2] == fw or (box[1] == 0 and "splash" in name)):
+            if box and (box[0] == 0 or box[2] == fw or (splash and (box[1] == 0 or box[3] == im.size[1]))):
                 print(f"{name}: frame {i} touches its edge {box}")
                 ok = False
-    return ok
+    return check_wrap_canvas() and check_loops() and check_rain_spacing() and ok
 
 
 def main():

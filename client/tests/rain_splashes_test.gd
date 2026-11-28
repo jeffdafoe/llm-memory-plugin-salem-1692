@@ -254,6 +254,9 @@ func _test_missing_sheet_yields_null() -> void:
 ## each must load as its full 8-frame animation of whole 32x32 frames.
 func _test_shipped_sheets_load_whole() -> void:
     for path in [_splashes.SPLASH_SHEET, _splashes.SNOW_SPLASH_SHEET]:
+        # The sheet itself, exactly: 8 frames of 32x32 and nothing more.
+        var sheet: Texture2D = load(path)
+        _check("%s is 256x32" % path, sheet != null and sheet.get_size() == Vector2(256, 32))
         var frames: SpriteFrames = _splashes._load_frames(path)
         _check("%s loads" % path, frames != null)
         if frames == null:
