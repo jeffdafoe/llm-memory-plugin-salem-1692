@@ -4,17 +4,16 @@ extends SceneTree
 ##
 ## Two things this file exists to catch:
 ##
-##  1. The zoom contract. The weather art is pixel art on the village's 16px
-##     grid, and the village draws at render_scale 2.0, so the overlay must
-##     draw its tiles at 2.0 * camera.zoom.x or the rain reads as a different
+##  1. The zoom contract. The weather art is painted at the village's density
+##     2, and the painted village draws at render_scale 1.0, so the overlay must
+##     draw its tiles at 1.0 * camera.zoom.x or the rain reads as a different
 ##     resolution than the world under it. A Control's size is in PRE-scale
 ##     units, so screen coverage has to divide by that scale — getting the
 ##     two to move together is the regression here.
 ##
-##  2. Degrading without the art. The Mana Seed pack is purchased and
-##     gitignored (client/.gitignore), so a checkout without it is normal —
-##     CI runs exactly that way. Missing sheets must leave a working storm
-##     (tint + full-screen flash) rather than erroring every frame.
+##  2. Degrading without the art. The sheets are in the repo
+##     (assets/weather/), but a missing or unreadable one must leave a working
+##     storm (tint + full-screen flash) rather than erroring every frame.
 ##
 ## Run headless (CI and local):
 ##   godot --headless --path client --import
@@ -32,6 +31,7 @@ const TESTS := [
     "_test_slices_a_synthetic_sheet",
     "_test_slice_stops_short_on_an_undersized_sheet",
     "_test_missing_sheet_yields_no_frames",
+    "_test_shipped_sheets_cut_into_whole_frames",
     "_test_pixel_scale_tracks_camera_zoom",
     "_test_layout_covers_viewport_at_every_zoom",
     "_test_bolt_scale_floors_only_when_zoomed_out",
@@ -46,9 +46,11 @@ const TESTS := [
     "_test_snowstorm_draws_snow_without_lightning",
 ]
 
-const FRAME := Vector2i(32, 128)
+const FRAME := Vector2i(64, 256)
 const FRAME_COUNT := 8
-const BOLT_FRAME := Vector2i(32, 128)
+const BOLT_FRAME := Vector2i(64, 256)
+## One rain tile's width in source pixels: the drift wraps at it.
+const TILE := 64.0
 
 var _fx: CanvasLayer = null
 var _failures := 0
@@ -157,20 +159,41 @@ func _test_slice_stops_short_on_an_undersized_sheet() -> void:
     _done()
 
 func _test_missing_sheet_yields_no_frames() -> void:
-    var frames: Array[Texture2D] = _fx._slice_sheet("res://assets/tilesets/mana-seed/weather-effects/no such sheet.png", FRAME, FRAME_COUNT)
+    var frames: Array[Texture2D] = _fx._slice_sheet("res://assets/weather/no such sheet.png", FRAME, FRAME_COUNT)
     _check("absent sheet slices to nothing", frames.is_empty())
     _done()
 
-## One source pixel of village art covers 2.0 * zoom screen pixels — the
+## The painted sheets ship in the repo (assets/weather/, LLM-970), so _ready
+## loaded them: every sheet must cut into its full set of whole frames at the
+## sizes the overlay is built for. A sheet repainted at another size, or a
+## frame-size constant left behind, fails here instead of drawing a torn tile.
+func _test_shipped_sheets_cut_into_whole_frames() -> void:
+    var sheets := {
+        "light rain": _fx._rain_frames_light,
+        "heavy rain": _fx._rain_frames_heavy,
+        "light snow": _fx._snow_frames_light,
+        "heavy snow": _fx._snow_frames_heavy,
+    }
+    for name in sheets:
+        var frames: Array[Texture2D] = sheets[name]
+        _check("%s has all %d frames" % [name, FRAME_COUNT], frames.size() == FRAME_COUNT)
+        for tex in frames:
+            _check("%s frame is one %s tile" % [name, FRAME], tex.get_size() == Vector2(FRAME))
+    _check("both bolt variants load", _fx._bolt_variants.size() == 2)
+    for tex in _fx._bolt_variants:
+        _check("bolt is one %s frame" % BOLT_FRAME, tex.get_size() == Vector2(BOLT_FRAME))
+    _done()
+
+## One source pixel of village art covers 1.0 * zoom screen pixels — the
 ## overlay has to agree with world.gd's render_scale or the rain is the wrong
 ## size against the world. No camera yet (main.gd injects it after _ready)
 ## falls back to the unzoomed scale.
 func _test_pixel_scale_tracks_camera_zoom() -> void:
     _fx.camera = null
-    _check("no camera falls back to the world render scale", is_equal_approx(_fx._world_pixel_scale(), 2.0))
+    _check("no camera falls back to the world render scale", is_equal_approx(_fx._world_pixel_scale(), 1.0))
     for zoom in [0.3, 1.0, 3.0]:
         var cam := _set_zoom(zoom)
-        _check("zoom %s scales to %s" % [zoom, 2.0 * zoom], is_equal_approx(_fx._world_pixel_scale(), 2.0 * zoom))
+        _check("zoom %s scales to %s" % [zoom, 1.0 * zoom], is_equal_approx(_fx._world_pixel_scale(), 1.0 * zoom))
         _clear_zoom(cam)
     _done()
 
@@ -184,9 +207,9 @@ func _test_layout_covers_viewport_at_every_zoom() -> void:
         var cam := _set_zoom(zoom)
         _fx._layout()
         # Rain snaps to a whole-number scale (fractional nearest-neighbour
-        # sampling bands a repeating drop field — see _rain_scale); the bolt
-        # keeps tracking the raw village scale.
-        var scale: float = maxf(1.0, roundf(2.0 * zoom))
+        # sampling bands a repeating drop field — see _rain_scale), or to an
+        # exact half below 0.75; the bolt keeps tracking the raw village scale.
+        var scale: float = 0.5 if zoom < 0.75 else maxf(1.0, roundf(zoom))
         for rect: TextureRect in [_fx._rain_heavy, _fx._rain_light]:
             _check("zoom %s — tiles drawn at the snapped pixel size" % zoom,
                 rect.scale.is_equal_approx(Vector2(scale, scale)))
@@ -195,11 +218,11 @@ func _test_layout_covers_viewport_at_every_zoom() -> void:
                 covered.x >= view.x and covered.y >= view.y)
         # The bolt tracks the raw scale but never below the unzoomed village
         # size, or it reads as a scratch at the 0.3 zoom floor.
-        var bolt: float = maxf(2.0 * zoom, 2.0)
+        var bolt: float = maxf(1.0 * zoom, 1.0)
         _check("zoom %s — bolt drawn at %s" % [zoom, bolt],
             _fx._bolt.scale.is_equal_approx(Vector2(bolt, bolt)))
         _check("zoom %s — bolt never shrinks below the village's own size" % zoom,
-            _fx._bolt.scale.x >= 2.0)
+            _fx._bolt.scale.x >= 1.0)
         # Scale alone does not make a Control drawable — a zero-size bolt would
         # satisfy every scale check above and still render nothing.
         _check("zoom %s — bolt is one frame in unscaled units" % zoom,
@@ -216,11 +239,11 @@ func _test_bolt_scale_floors_only_when_zoomed_out() -> void:
     for zoom in [0.3, 0.5, 1.0, 2.0]:
         var cam := _set_zoom(zoom)
         _check("zoom %s — bolt is the larger of world scale and the floor" % zoom,
-            is_equal_approx(_fx._bolt_scale(), maxf(2.0 * zoom, 2.0)))
+            is_equal_approx(_fx._bolt_scale(), maxf(1.0 * zoom, 1.0)))
         _clear_zoom(cam)
     _done()
 
-## The whole raise/strike/clear cycle with no art loaded (CI's state). Nothing
+## The whole raise/strike/clear cycle with no art loaded (a missing sheet). Nothing
 ## here may error, and the flash — the part that carries the effect — must
 ## still run.
 func _test_storm_cycle_without_art() -> void:
@@ -312,8 +335,8 @@ func _test_rain_hidden_after_instant_clear() -> void:
 ## properties is not sufficient on its own, so this asserts the schedulers are
 ## dead too, not merely that this frame looks right.
 func _test_clearing_mid_strike_leaves_nothing_running() -> void:
-    # Seed synthetic bolts rather than relying on the purchased pack. Without
-    # them _strike() correctly no-ops, so on an art-less checkout (CI) every
+    # Seed synthetic bolts rather than relying on the sheets on disk. Without
+    # them _strike() correctly no-ops, so on an art-less checkout every
     # assertion below would be vacuous — and the preconditions would fail
     # outright. What is under test is the teardown, not the art.
     var bolts: Array[Texture2D] = _fx._bolt_variants
@@ -365,17 +388,17 @@ func _test_wind_drift_slides_and_wraps() -> void:
     _check("heavy layer drifts slower — the layers shear",
         _fx._rain_heavy_drift < _fx._rain_light_drift)
     _check("sheet position follows the phase, one tile left of the edge",
-        is_equal_approx(_fx._rain_light.position.x, (_fx._rain_light_drift - 32.0) * 2.0))
+        is_equal_approx(_fx._rain_light.position.x, (_fx._rain_light_drift - TILE) * 1.0))
 
     for _i in 20:
         _fx._advance_rain(0.9)
     _check("light drift stays wrapped inside one tile",
-        _fx._rain_light_drift >= 0.0 and _fx._rain_light_drift < 32.0)
+        _fx._rain_light_drift >= 0.0 and _fx._rain_light_drift < TILE)
     _check("heavy drift stays wrapped inside one tile",
-        _fx._rain_heavy_drift >= 0.0 and _fx._rain_heavy_drift < 32.0)
+        _fx._rain_heavy_drift >= 0.0 and _fx._rain_heavy_drift < TILE)
 
     var view: Vector2 = _fx.get_viewport().get_visible_rect().size
-    for phase in [0.0, 15.9, 31.9]:
+    for phase in [0.0, 31.9, 63.9]:
         _fx._rain_light_drift = phase
         _fx._rain_heavy_drift = phase
         _fx._apply_rain_drift()
@@ -391,7 +414,7 @@ func _test_wind_drift_slides_and_wraps() -> void:
     _clear_zoom(cam)
     _done()
 
-## The frame-timing counters must wrap even with no art loaded (CI's state) —
+## The frame-timing counters must wrap even with no art loaded (a missing sheet) —
 ## unwrapped they accumulate for the life of the client and bleed float
 ## precision (code_review, LLM-632). Fails on the pre-fix code, where the
 ## fmod sat inside the frames-exist branch.
@@ -443,7 +466,8 @@ func _test_a_long_delta_advances_all_its_frames() -> void:
     _fx._rain_heavy_frame = 0
     _done()
 
-## The rain must draw at a WHOLE-number scale at every zoom. At a fractional
+## The rain must draw at a WHOLE-number scale, or an exact half when zoomed
+## well out, at every zoom. At a fractional
 ## scale, nearest-neighbour sampling hands some source pixels two screen
 ## pixels and some one, and on a repeating field of identical drops that
 ## quantization lines up into visible columns of fatter drops that jump at
@@ -452,7 +476,7 @@ func _test_a_long_delta_advances_all_its_frames() -> void:
 ## draw at.
 func _test_rain_scale_snaps_to_whole_numbers() -> void:
     var view: Vector2 = _fx.get_viewport().get_visible_rect().size
-    for pair in [[0.3, 1.0], [0.55, 1.0], [1.0, 2.0], [1.15, 2.0], [1.4, 3.0], [3.0, 6.0]]:
+    for pair in [[0.3, 0.5], [0.7, 0.5], [0.8, 1.0], [1.0, 1.0], [1.4, 1.0], [1.6, 2.0], [3.0, 3.0]]:
         var zoom: float = pair[0]
         var expected: float = pair[1]
         var cam := _set_zoom(zoom)
@@ -470,7 +494,7 @@ func _test_rain_scale_snaps_to_whole_numbers() -> void:
         _fx._rain_light_drift = 0.0
         _fx._apply_rain_drift()
         _check("zoom %s — drift position uses the snapped scale" % zoom,
-            is_equal_approx(_fx._rain_light.position.x, -32.0 * expected))
+            is_equal_approx(_fx._rain_light.position.x, -TILE * expected))
         _clear_zoom(cam)
     _fx._layout()
     _done()
@@ -480,24 +504,24 @@ func _test_rain_scale_snaps_to_whole_numbers() -> void:
 ## (_applied_rain_scale) or the sheet slides at one scale while painted at
 ## another, reopening the edge-coverage gap this pairing exists to close.
 func _test_drift_uses_the_drawn_scale_not_the_live_camera() -> void:
-    var cam := _set_zoom(1.0)   # snapped scale 2.0
+    var cam := _set_zoom(2.0)   # snapped scale 2.0
     _fx._layout()
     _check("precondition — drawn scale is 2.0", is_equal_approx(_fx._applied_rain_scale, 2.0))
 
     # Zoom the camera WITHOUT laying out — the one-frame (or deferred-layout)
     # window where live and drawn scales disagree.
-    cam.zoom = Vector2(3.0, 3.0)   # live snapped scale would be 6.0
-    _check("precondition — live snap now disagrees", is_equal_approx(_fx._rain_scale(), 6.0))
+    cam.zoom = Vector2(3.0, 3.0)   # live snapped scale would be 3.0
+    _check("precondition — live snap now disagrees", is_equal_approx(_fx._rain_scale(), 3.0))
 
     _fx._rain_light_drift = 0.0
     _fx._rain_heavy_drift = 0.0
     _fx._advance_rain(0.5)
     _check("drift still moves at the drawn scale, not the live camera's",
         is_equal_approx(_fx._rain_light.position.x,
-            (_fx._rain_light_drift - 32.0) * 2.0))
+            (_fx._rain_light_drift - TILE) * 2.0))
     _check("heavy layer too",
         is_equal_approx(_fx._rain_heavy.position.x,
-            (_fx._rain_heavy_drift - 32.0) * 2.0))
+            (_fx._rain_heavy_drift - TILE) * 2.0))
 
     _fx._rain_light_drift = 0.0
     _fx._rain_heavy_drift = 0.0

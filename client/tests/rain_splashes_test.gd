@@ -10,13 +10,13 @@ extends SceneTree
 ##     click hit-testing uses, via a stub world here so the suite needs no
 ##     catalog autoload and no real assets.
 ##
-##  2. The world-scale contract. Splash art is pixel art on the village's 16px
-##     grid and spawns in world space, so it draws at the village render scale
-##     (2.0) or it reads as a different resolution than the ground it hits.
+##  2. The world-scale contract. Splash art is painted at the village's
+##     density 2 and spawns in world space, so it draws at the painted
+##     village's render scale (1.0) or it reads as a different resolution than
+##     the ground it hits.
 ##
-##  3. Degrading without the art. The Mana Seed pack is purchased and
-##     gitignored (client/.gitignore), so a checkout without it is normal — CI
-##     runs exactly that way. Missing art must mean no splashes and no errors,
+##  3. Degrading without the art. The sheets are in the repo
+##     (assets/weather/), but missing art must mean no splashes and no errors,
 ##     never a broken storm.
 ##
 ## Run headless (CI and local):
@@ -27,13 +27,14 @@ extends SceneTree
 ## The spawner is added to the tree (like storm_fx_test.gd) because spawning
 ## reads the viewport's canvas transform for the visible world rect. Frame
 ## slicing is asserted against synthetic in-memory sheets so the contract is
-## checked the same way with and without the purchased art on disk.
+## checked the same way whatever art is on disk.
 
 const TESTS := [
     "_test_builds_frames_from_a_synthetic_sheet",
     "_test_undersized_sheet_stops_short",
     "_test_sheet_smaller_than_one_frame_yields_null",
     "_test_missing_sheet_yields_null",
+    "_test_shipped_sheets_load_whole",
     "_test_cover_rejection_is_exact",
     "_test_pick_point_respects_cover",
     "_test_gathers_cover_rects_from_the_world",
@@ -47,7 +48,7 @@ const TESTS := [
     "_test_world_snowstorm_follows_season_and_snow_tier",
 ]
 
-const FRAME := Vector2i(16, 16)
+const FRAME := Vector2i(32, 32)
 const FRAME_COUNT := 8
 
 var _splashes: Node2D = null
@@ -130,7 +131,7 @@ func _check_test_list() -> void:
 
 # --- fixtures --------------------------------------------------------------------
 
-## A stand-in for the 128x16 impact sheet: N frames side by side.
+## A stand-in for the 256x32 impact sheet: N frames side by side.
 func _make_strip(count: int) -> ImageTexture:
     var img := Image.create(maxi(FRAME.x * count, 1), FRAME.y, false, Image.FORMAT_RGBA8)
     return ImageTexture.create_from_image(img)
@@ -245,8 +246,23 @@ func _test_sheet_smaller_than_one_frame_yields_null() -> void:
 
 func _test_missing_sheet_yields_null() -> void:
     var frames: SpriteFrames = _splashes._load_frames(
-        "res://assets/tilesets/mana-seed/weather-effects/no such sheet.png")
+        "res://assets/weather/no such sheet.png")
     _check("absent sheet loads to nothing", frames == null)
+    _done()
+
+## The painted impact sheets ship in the repo (assets/weather/, LLM-970):
+## each must load as its full 8-frame animation of whole 32x32 frames.
+func _test_shipped_sheets_load_whole() -> void:
+    for path in [_splashes.SPLASH_SHEET, _splashes.SNOW_SPLASH_SHEET]:
+        var frames: SpriteFrames = _splashes._load_frames(path)
+        _check("%s loads" % path, frames != null)
+        if frames == null:
+            continue
+        _check("%s has all %d frames" % [path, FRAME_COUNT],
+            frames.get_frame_count("default") == FRAME_COUNT)
+        for i in frames.get_frame_count("default"):
+            _check("%s frame %d is one %s frame" % [path, i, FRAME],
+                frames.get_frame_texture("default", i).get_size() == Vector2(FRAME))
     _done()
 
 func _test_cover_rejection_is_exact() -> void:
@@ -300,7 +316,7 @@ func _test_spawning_follows_the_storm() -> void:
     _check("a storm spawns splashes over open ground", spawned > 0)
     for child in _splashes.get_children():
         _check("splash draws at the village render scale",
-            child.scale.is_equal_approx(Vector2(2.0, 2.0)))
+            child.scale.is_equal_approx(Vector2(1.0, 1.0)))
         _check("splash carries the one-shot animation",
             child is AnimatedSprite2D and child.sprite_frames != null)
 
@@ -412,7 +428,7 @@ func _test_world_replays_known_weather_onto_a_fresh_splash_layer() -> void:
     world.free()
     _done()
 
-## CI's normal state: the purchased pack is absent, frames are null. The storm
+## No art loaded: frames are null. The storm
 ## must run without splashes rather than erroring every frame.
 func _test_artless_checkout_spawns_nothing() -> void:
     var stub := _setup_world()

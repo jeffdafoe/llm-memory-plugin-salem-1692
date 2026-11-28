@@ -16,12 +16,12 @@ extends CanvasLayer
 ## night-storm darkens further from the already-cold night tint, both
 ## reading correctly, without two systems fighting over one CanvasModulate.
 ##
-## Art: Seliel "weather effects 2.0" (assets/tilesets/mana-seed/
-## weather-effects/), the same artist and resolution as the rest of the
-## village. Rain is the two 8-frame sheets tiled across the screen, light
-## over heavy at the artist's own cadences. Lightning is a bolt sprite drawn
-## ON TOP of the full-screen white flash — the flash is the part that sells
-## it, so the bolt adds to it rather than replacing it.
+## Art: our own painted sheets (assets/weather/, made by
+## tools/tree-art/weather.py, LLM-970), at the village's density 2 like the
+## painted props. Rain is the two 8-frame sheets tiled across the screen, light
+## over heavy at their own cadences. Lightning is a bolt sprite drawn ON TOP of
+## the full-screen white flash — the flash is the part that sells it, so the
+## bolt adds to it rather than replacing it.
 ##
 ## Mouse passthrough: every child uses MOUSE_FILTER_IGNORE so clicks fall
 ## through to the world underneath, exactly like the sleep-fade overlay.
@@ -30,8 +30,7 @@ extends CanvasLayer
 ## loop (Sound.set_rain) and each strike sends thunder after it (Sound.thunder).
 ##
 ## A winter storm is a snowstorm (LLM-850): set_storm(..., snow=true) draws the
-## pack's two snowfall sheets in place of the rain, at the artist's snow
-## cadences and a gentler wind, under the same tint — with no lightning, no
+## two snowfall sheets in place of the rain, at the snow cadences and a gentler wind, under the same tint — with no lightning, no
 ## thunder and no rain sound.
 
 ## Storm tint — cool, desaturated slate. Alpha kept < 1.0 so the world bleeds
@@ -51,30 +50,28 @@ const RAIN_TARGET_ALPHA: float = 0.5
 const FADE_IN_DURATION: float = 2.0
 const FADE_OUT_DURATION: float = 2.0
 
-const WEATHER_DIR: String = "res://assets/tilesets/mana-seed/weather-effects/"
-const RAIN_LIGHT_SHEET: String = WEATHER_DIR + "weather effects, rain light anim 32x128.png"
-const RAIN_HEAVY_SHEET: String = WEATHER_DIR + "weather effects, rain heavy anim 32x128.png"
+const WEATHER_DIR: String = "res://assets/weather/"
+const RAIN_LIGHT_SHEET: String = WEATHER_DIR + "rain-light.png"
+const RAIN_HEAVY_SHEET: String = WEATHER_DIR + "rain-heavy.png"
 ## The snowfall sheets have the rain sheets' size and frame count, so they ride
 ## the same two tiled layers.
-const SNOW_LIGHT_SHEET: String = WEATHER_DIR + "weather effects, snow light anim 32x128.png"
-const SNOW_HEAVY_SHEET: String = WEATHER_DIR + "weather effects, snow heavy anim 32x128.png"
-const LIGHTNING_SHEET: String = WEATHER_DIR + "weather effects, lightning full 32x128.png"
+const SNOW_LIGHT_SHEET: String = WEATHER_DIR + "snow-light.png"
+const SNOW_HEAVY_SHEET: String = WEATHER_DIR + "snow-heavy.png"
+const LIGHTNING_SHEET: String = WEATHER_DIR + "lightning.png"
 
-## Both rain sheets are 256x128 — 8 frames of one 32x128 tile, built to tile
-## seamlessly in both axes. The bolt sheet is 64x128: two interchangeable
-## 32x128 bolt variants side by side, not an animation.
-const RAIN_FRAME_SIZE: Vector2i = Vector2i(32, 128)
+## Both rain sheets are 512x256 — 8 frames of one 64x256 tile, built to tile
+## seamlessly in both axes. The bolt sheet is 128x256: two interchangeable
+## 64x256 bolt variants side by side, not an animation.
+const RAIN_FRAME_SIZE: Vector2i = Vector2i(64, 256)
 const RAIN_FRAME_COUNT: int = 8
-const BOLT_FRAME_SIZE: Vector2i = Vector2i(32, 128)
+const BOLT_FRAME_SIZE: Vector2i = Vector2i(64, 256)
 const BOLT_VARIANT_COUNT: int = 2
 
-## Per-frame hold times from the pack's own "using these effects.txt" — the
-## two rain layers must run at DIFFERENT speeds or they beat against each
+## Per-frame hold times — the two rain layers must run at DIFFERENT speeds or they beat against each
 ## other and read as one flat sheet instead of depth.
 const RAIN_LIGHT_FRAME_SECONDS: float = 0.05
 const RAIN_HEAVY_FRAME_SECONDS: float = 0.10
-## The artist's snow cadences (same notes): slower than rain, and again
-## different from each other.
+## The snow cadences: slower than rain, and again different from each other.
 const SNOW_LIGHT_FRAME_SECONDS: float = 0.175
 const SNOW_HEAVY_FRAME_SECONDS: float = 0.10
 
@@ -85,24 +82,22 @@ const SNOW_HEAVY_FRAME_SECONDS: float = 0.10
 ## (they scale with the on-screen pixel size like everything else), light
 ## faster than heavy so the two layers shear against each other — near sheet
 ## moves more than far sheet, which is what gives the curtain depth. One tile
-## is 32 source px, so the light layer crosses a tile in ~3s.
-const RAIN_DRIFT_LIGHT_PPS: float = 10.0
-const RAIN_DRIFT_HEAVY_PPS: float = 6.0
+## is 64 source px, so the light layer crosses a tile in ~3s.
+const RAIN_DRIFT_LIGHT_PPS: float = 20.0
+const RAIN_DRIFT_HEAVY_PPS: float = 12.0
 ## Snow drifts on a lighter wind than rain — first guesses, tune by eye.
-const SNOW_DRIFT_LIGHT_PPS: float = 4.0
-const SNOW_DRIFT_HEAVY_PPS: float = 2.5
+const SNOW_DRIFT_LIGHT_PPS: float = 8.0
+const SNOW_DRIFT_HEAVY_PPS: float = 5.0
 ## Snowflakes are white on a darkened sky and read stronger than rain at the
 ## same alpha, but too faint a fall reads as dust — a first guess.
 const SNOW_TARGET_ALPHA: float = 0.7
 
-## Village art is drawn at render_scale 2.0 by default (world.gd
-## _asset_render_scale), so one source pixel of village art covers
-## 2.0 * camera.zoom.x screen pixels. The weather art is pixel art at the same
-## 16px grid, so it has to be drawn at that same size or it reads as a
-## different resolution laid over the village — thin sharp rain over a chunky
-## world when zoomed in, and the reverse when zoomed out. The old procedural
-## particles had no pixel size, which is why nothing mismatched before.
-const WORLD_RENDER_SCALE: float = 2.0
+## The painted village art is density 2: drawn at render_scale 1, so one
+## source pixel covers 1.0 * camera.zoom.x screen pixels. The weather art is
+## painted at the same density, so it has to be drawn at that same size or it
+## reads as a different resolution laid over the village — thin sharp rain over
+## a chunky world when zoomed in, and the reverse when zoomed out.
+const WORLD_RENDER_SCALE: float = 1.0
 
 ## Lightning — a brief white full-screen flash on a randomized interval while
 ## the storm is active. Kept sparse so it punctuates rather than strobes.
@@ -155,7 +150,7 @@ var _rain_heavy_frame: int = 0
 var _rain_light_elapsed: float = 0.0
 var _rain_heavy_elapsed: float = 0.0
 
-## Wind drift phase per layer, in source pixels, wrapped to one 32px tile —
+## Wind drift phase per layer, in source pixels, wrapped to one 64px tile —
 ## the sheets tile seamlessly, so a full tile of travel lands back on the
 ## identical image and the phase never has to grow.
 var _rain_light_drift: float = 0.0
@@ -325,10 +320,9 @@ func _make_rain_rect(frames: Array[Texture2D]) -> TextureRect:
     return rect
 
 
-## Load a weather sheet and cut it into frames. The art is a purchased pack and
-## is gitignored (client/.gitignore), so a checkout without it is normal — CI
-## runs that way. Returning empty rather than failing degrades the storm to
-## tint + flash instead of breaking the client.
+## Load a weather sheet and cut it into frames. The sheets are in the repo,
+## but returning empty rather than failing on a missing or unreadable one
+## degrades the storm to tint + flash instead of breaking the client.
 func _slice_sheet(path: String, frame_size: Vector2i, count: int) -> Array[Texture2D]:
     var sheet: Texture2D = load(path) if ResourceLoader.exists(path) else null
     if sheet == null:
@@ -366,14 +360,24 @@ func _world_pixel_scale() -> float:
 ## Nearest-neighbour sampling at a fractional scale gives some source pixels
 ## one screen pixel and some two, and on a repeating field of identical 1px
 ## drops that quantization lines up into visible columns of fatter/longer
-## drops. Worse, the wind drift wraps at the 32px TEXTURE period while the
+## drops. Worse, the wind drift wraps at the 64px TEXTURE period while the
 ## fat-column beat has its own incommensurate period, so at every wrap the
 ## bands jump back — they read as caught in place while the rain slides. An
 ## integer scale has no fractional sampling, so there is no beat to see; the
 ## cost is rain slightly chunkier or finer than the world between integer
 ## zoom products, which the bolt already accepts with its own floor.
+##
+## Below a world pixel scale of 0.75 (camera zoom under 0.75) the rain draws at
+## exactly half size instead of 1: an exact 2:1 shrink samples every other
+## pixel the same way everywhere, so it has no beat either, and it keeps the
+## rain the size it was in the old 16 px art, where those zooms still rounded
+## to 1 old pixel. Every drop and flake is at least 2 pixels wide, so the
+## shrink never drops one.
 func _rain_scale() -> float:
-    return maxf(1.0, roundf(_world_pixel_scale()))
+    var pixel_scale: float = _world_pixel_scale()
+    if pixel_scale < 0.75:
+        return 0.5
+    return maxf(1.0, roundf(pixel_scale))
 
 
 ## Size and scale the rain layers to cover the viewport with tiles drawn at
