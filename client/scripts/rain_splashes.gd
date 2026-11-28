@@ -27,28 +27,28 @@ extends Node2D
 ## (1), under objects and NPCs (OBJECT_Z 10). As a child of World it is tinted
 ## by the day/night + storm CanvasModulate like everything else on the ground.
 ##
-## Art: Seliel "weather effects 2.0" impact sheet — 8 frames of 16x16, drawn
-## at the village render scale (2.0) so one art pixel is one world pixel like
-## every other village sprite. The pack is purchased and gitignored, so a
-## checkout without it is normal — CI runs that way. Missing art degrades to
-## no splashes; the storm's rain, tint and lightning are untouched.
+## Art: our own painted impact sheet (assets/weather/, made by
+## tools/tree-art/weather.py, LLM-970) — 8 frames of 32x32, the drop landing on
+## the frame's centre, at the village's density 2: drawn at render scale 1.0
+## like the painted props. Missing art degrades to no splashes; the storm's
+## rain, tint and lightning are untouched.
 ##
-## In a snowstorm (LLM-850) the pack's snow impact sheet lands in place of the
-## rain's — but not on ground already white: the artist's note says no snow
-## drops on a snow-covered floor, so they stop once the snowy ground is down.
+## In a snowstorm (LLM-850) the snow impact sheet lands in place of the
+## rain's — but not on ground already white: no snow lands visibly on a
+## snow-covered floor, so they stop once the snowy ground is down.
 
-const SPLASH_SHEET: String = "res://assets/tilesets/mana-seed/weather-effects/weather effects, rain impact anim 16x16.png"
-const SNOW_SPLASH_SHEET: String = "res://assets/tilesets/mana-seed/weather-effects/weather effects, snow impact anim 16x16.png"
-const FRAME_SIZE: Vector2i = Vector2i(16, 16)
+const SPLASH_SHEET: String = "res://assets/weather/rain-splash.png"
+const SNOW_SPLASH_SHEET: String = "res://assets/weather/snow-splash.png"
+const FRAME_SIZE: Vector2i = Vector2i(32, 32)
 const FRAME_COUNT: int = 8
-## Artist-suggested 75ms per frame, so one splash lives 0.6s.
+## 75ms per frame, so one splash lives 0.6s.
 const FRAME_FPS: float = 1000.0 / 75.0
 ## And 150ms for snow, so a snow impact lives 1.2s.
 const SNOW_FRAME_FPS: float = 1000.0 / 150.0
 
-## Matches world.gd's default asset render scale — splash art pixels must be
-## the same on-screen size as the village art they land next to.
-const WORLD_RENDER_SCALE: float = 2.0
+## The painted village art's render scale (density 2) — splash art pixels
+## must be the same on-screen size as the village art they land next to.
+const WORLD_RENDER_SCALE: float = 1.0
 
 ## Over terrain (0) and the bridge (asset z_index 1), under objects/NPCs (10).
 const SPLASH_Z: int = 2
@@ -138,8 +138,7 @@ func _process(delta: float) -> void:
 
 
 ## Load the impact sheet into a one-shot SpriteFrames animation. Missing art
-## (gitignored purchased pack — CI's normal state) returns null and the node
-## never spawns; the rest of the storm doesn't care.
+## returns null and the node never spawns; the rest of the storm doesn't care.
 func _load_frames(path: String, fps: float = FRAME_FPS) -> SpriteFrames:
     var sheet: Texture2D = load(path) if ResourceLoader.exists(path) else null
     if sheet == null:
