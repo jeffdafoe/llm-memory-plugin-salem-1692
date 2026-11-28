@@ -493,12 +493,19 @@ def check_loops():
             if frames[0].tobytes() != frames[FRAMES].tobytes():
                 print(f"{name}-{kind}: frame {FRAMES} is not frame 0 (the loop jumps)")
                 ok = False
-            if name == "rain" and not any(
-                    f.crop((0, 0, W, 1)).getbbox() and f.crop((0, H - 1, W, H)).getbbox()
-                    for f in frames[:FRAMES]):
+            if name == "rain" and not any(crosses_bottom(f) for f in frames[:FRAMES]):
                 print(f"{name}-{kind}: no frame has a shape crossing the tile's top/bottom edge")
                 ok = False
     return ok
+
+
+def crosses_bottom(frame):
+    """True when some column has paint on both the top and the bottom row.
+    Streak columns are kept apart (RAIN_MIN_GAP), so paint at the same x on
+    both rows is one streak running across the seam, not two streaks."""
+    W, H = frame.size
+    px = frame.load()
+    return any(px[x, 0][3] and px[x, H - 1][3] for x in range(W))
 
 
 def check_rain_spacing():
